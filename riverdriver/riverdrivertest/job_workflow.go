@@ -125,6 +125,7 @@ func exerciseJobCancelWorkflow[TTx any](ctx context.Context, t *testing.T, execu
 			var meta map[string]any
 			require.NoError(t, json.Unmarshal(cancelled[0].Metadata, &meta))
 			require.Contains(t, meta, "cancel_attempted_at", "running task must carry cancel_attempted_at so the rescuer doesn't rescue it")
+			require.IsType(t, "", meta["cancel_attempted_at"], "cancel_attempted_at must be a JSON string")
 		})
 	})
 }
@@ -358,6 +359,53 @@ func exerciseJobUpdateWorkflowReady[TTx any](ctx context.Context, t *testing.T, 
 			require.Len(t, updated, 1)
 			require.Equal(t, taskB.ID, updated[0].ID)
 			require.Equal(t, rivertype.JobStateCancelled, updated[0].State)
+		})
+
+		t.Run("LeavesPendingWhenDepIsRetryable", func(t *testing.T) {
+			t.Parallel()
+			exec := setup(ctx, t)
+			now := time.Now()
+			workflowID := "wf-retryable-dep"
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: workflowID, TaskName: "a", State: rivertype.JobStateRetryable})
+			taskB := insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: workflowID, TaskName: "b", Deps: []string{"a"}, State: rivertype.JobStatePending})
+
+			updated, err := exec.JobUpdateWorkflowReady(ctx, &riverdriver.JobUpdateWorkflowReadyParams{Max: 100, Now: now})
+			require.NoError(t, err)
+			require.Empty(t, updated)
+
+			row, err := exec.JobGetByID(ctx, &riverdriver.JobGetByIDParams{ID: taskB.ID})
+			require.NoError(t, err)
+			require.Equal(t, rivertype.JobStatePending, row.State)
+		})
+
+		t.Run("HonorsIgnoreCancelledDeps", func(t *testing.T) {
+			t.Parallel()
+			exec := setup(ctx, t)
+			now := time.Now()
+			workflowID := "wf-ignore-cancelled"
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: workflowID, TaskName: "a", State: rivertype.JobStateCancelled})
+			taskB := insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: workflowID, TaskName: "b", Deps: []string{"a"}, State: rivertype.JobStatePending, IgnoreCancelledDeps: true})
+
+			updated, err := exec.JobUpdateWorkflowReady(ctx, &riverdriver.JobUpdateWorkflowReadyParams{Max: 100, Now: now})
+			require.NoError(t, err)
+			require.Len(t, updated, 1)
+			require.Equal(t, taskB.ID, updated[0].ID)
+			require.Equal(t, rivertype.JobStateAvailable, updated[0].State)
+		})
+
+		t.Run("HonorsIgnoreDeletedDepsTrue", func(t *testing.T) {
+			t.Parallel()
+			exec := setup(ctx, t)
+			now := time.Now()
+			workflowID := "wf-ignore-deleted"
+			// Task "a" is never inserted (simulating deleted dep).
+			taskB := insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: workflowID, TaskName: "b", Deps: []string{"a"}, State: rivertype.JobStatePending, IgnoreDeletedDeps: true})
+
+			updated, err := exec.JobUpdateWorkflowReady(ctx, &riverdriver.JobUpdateWorkflowReadyParams{Max: 100, Now: now})
+			require.NoError(t, err)
+			require.Len(t, updated, 1)
+			require.Equal(t, taskB.ID, updated[0].ID)
+			require.Equal(t, rivertype.JobStateAvailable, updated[0].State)
 		})
 	})
 }

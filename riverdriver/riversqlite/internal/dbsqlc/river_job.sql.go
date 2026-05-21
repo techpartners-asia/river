@@ -233,6 +233,13 @@ SELECT
     WHEN all_done = 1 AND dep_rows_found >= dep_rows_declared
       AND datetime(scheduled_at) > datetime(cast(?1 AS text)) THEN 'scheduled'
     WHEN all_done = 1 AND dep_rows_found >= dep_rows_declared THEN 'available'
+    WHEN all_done = 1
+      AND dep_rows_found < dep_rows_declared
+      AND coalesce(json_extract(metadata, '$."river:workflow_ignore_deleted_deps"'), 0) = 1
+      AND datetime(scheduled_at) > datetime(cast(?1 AS text)) THEN 'scheduled'
+    WHEN all_done = 1
+      AND dep_rows_found < dep_rows_declared
+      AND coalesce(json_extract(metadata, '$."river:workflow_ignore_deleted_deps"'), 0) = 1 THEN 'available'
     ELSE 'pending'
   END AS text) AS new_state
 FROM resolved

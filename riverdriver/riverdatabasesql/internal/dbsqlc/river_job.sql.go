@@ -105,7 +105,7 @@ WITH locked AS (
     AND finalized_at IS NULL
   FOR UPDATE
 ),
-notifications AS (
+notifications AS MATERIALIZED (
   SELECT pg_notify(
     concat(coalesce($5::text, current_schema()), '.', $6::text),
     json_build_object('action', 'cancel', 'job_id', id, 'queue', queue)::text
@@ -2015,6 +2015,13 @@ classified AS (
       WHEN COALESCE(all_done, true) AND dep_rows_found >= dep_rows_declared
         AND scheduled_at > $1::timestamptz THEN 'scheduled'
       WHEN COALESCE(all_done, true) AND dep_rows_found >= dep_rows_declared THEN 'available'
+      WHEN COALESCE(all_done, true)
+        AND dep_rows_found < dep_rows_declared
+        AND COALESCE((metadata->>'river:workflow_ignore_deleted_deps')::bool, false)
+        AND scheduled_at > $1::timestamptz THEN 'scheduled'
+      WHEN COALESCE(all_done, true)
+        AND dep_rows_found < dep_rows_declared
+        AND COALESCE((metadata->>'river:workflow_ignore_deleted_deps')::bool, false) THEN 'available'
       ELSE 'pending'
     END AS new_state
   FROM resolved

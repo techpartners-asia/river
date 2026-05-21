@@ -1166,43 +1166,50 @@ func (e *Executor) JobUpdateFull(ctx context.Context, params *riverdriver.JobUpd
 }
 
 func (e *Executor) JobUpdateWorkflowReady(ctx context.Context, params *riverdriver.JobUpdateWorkflowReadyParams) ([]*rivertype.JobRow, error) {
-	max := params.Max
-	if max <= 0 {
-		max = math.MaxInt32
-	}
-	nowStr := timeString(params.Now)
-	queries := dbsqlc.New()
-	classified, err := queries.JobClassifyWorkflowReady(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobClassifyWorkflowReadyParams{
-		Max: int64(max),
-		Now: nowStr,
-	})
-	if err != nil {
-		return nil, interpretError(err)
-	}
+	// Wrap in a transaction so that the classify+apply steps are atomic: a
+	// concurrent writer (e.g. JobCancelWorkflow) cannot move a pending row out
+	// of pending between the two phases, which would silently drop a promotion.
+	return dbutil.WithTxV(ctx, e, func(ctx context.Context, execTx riverdriver.ExecutorTx) ([]*rivertype.JobRow, error) {
+		dbtx := templateReplaceWrapper{dbtx: e.driver.UnwrapTx(execTx), replacer: &e.driver.replacer}
 
-	out := make([]*rivertype.JobRow, 0, len(classified))
-	for _, row := range classified {
-		if row.NewState == "" || row.NewState == "pending" {
-			continue
+		max := params.Max
+		if max <= 0 {
+			max = math.MaxInt32
 		}
-		job, err := queries.JobApplyWorkflowReady(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobApplyWorkflowReadyParams{
-			ID:       row.ID,
-			NewState: row.NewState,
-			Now:      nowStr,
+		nowStr := timeString(params.Now)
+		queries := dbsqlc.New()
+		classified, err := queries.JobClassifyWorkflowReady(schemaTemplateParam(ctx, params.Schema), dbtx, &dbsqlc.JobClassifyWorkflowReadyParams{
+			Max: int64(max),
+			Now: nowStr,
 		})
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
 			return nil, interpretError(err)
 		}
-		mapped, err := jobRowFromInternal(job)
-		if err != nil {
-			return nil, err
+
+		out := make([]*rivertype.JobRow, 0, len(classified))
+		for _, row := range classified {
+			if row.NewState == "" || row.NewState == "pending" {
+				continue
+			}
+			job, err := queries.JobApplyWorkflowReady(schemaTemplateParam(ctx, params.Schema), dbtx, &dbsqlc.JobApplyWorkflowReadyParams{
+				ID:       row.ID,
+				NewState: row.NewState,
+				Now:      nowStr,
+			})
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				return nil, interpretError(err)
+			}
+			mapped, err := jobRowFromInternal(job)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, mapped)
 		}
-		out = append(out, mapped)
-	}
-	return out, nil
+		return out, nil
+	})
 }
 
 func (e *Executor) LeaderAttemptElect(ctx context.Context, params *riverdriver.LeaderElectParams) (*riverdriver.Leader, error) {
