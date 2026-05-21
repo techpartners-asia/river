@@ -339,3 +339,61 @@ func TestSimulation_CancelCascades(t *testing.T) {
 		require.NotNil(t, r.FinalizedAt)
 	}
 }
+
+// TestDeadlineMetadataInjected verifies that WorkflowOpts.DeadlineAt round-trips
+// into the river:workflow_deadline_at metadata key on every task. This is the
+// contract the scheduler's cancelExpiredWorkflows depends on; if the key is
+// missing the deadline logic silently no-ops.
+func TestDeadlineMetadataInjected(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
+	require.NoError(t, err)
+	defer dbPool.Close()
+
+	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &recordingWorker{mu: &sync.Mutex{}, dur: 1 * time.Hour})
+
+	client, err := riverworkflow.NewClient(riverpgxv5.New(dbPool), &riverworkflow.Config{
+		Config: river.Config{
+			Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 1}},
+			Schema:  schema,
+			Workers: workers,
+		},
+		WorkflowScheduler: riverworkflow.WorkflowSchedulerConfig{
+			Interval: 100 * time.Millisecond,
+		},
+	})
+	require.NoError(t, err)
+
+	deadline := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{
+		DeadlineAt: deadline,
+		Name:       "deadline-metadata-test",
+	})
+	wf.Add("step1", recordingWorkerArgs{Task: "step1"}, nil, nil)
+	wf.Add("step2", recordingWorkerArgs{Task: "step2"}, nil, &riverworkflow.WorkflowTaskOpts{Deps: []string{"step1"}})
+
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	_, err = client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+
+	tasks, err := wf.LoadAll(ctx)
+	require.NoError(t, err)
+	for _, name := range []string{"step1", "step2"} {
+		row, err := tasks.Get(name)
+		require.NoError(t, err)
+		var meta map[string]any
+		require.NoError(t, json.Unmarshal(row.Metadata, &meta))
+		require.Equal(t, deadline.UTC().Format(time.RFC3339Nano),
+			meta[rivercommon.MetadataKeyWorkflowDeadlineAt],
+			"task %s should carry the workflow deadline in its metadata", name)
+	}
+}
+

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/internal/rivercommon"
@@ -13,6 +14,15 @@ import (
 
 // WorkflowOpts configures a new workflow.
 type WorkflowOpts struct {
+	// DeadlineAt sets an absolute moment past which any still non-terminal
+	// task in this workflow will be cancelled by the workflow scheduler with
+	// reason "workflow deadline exceeded". The zero value means no deadline.
+	//
+	// Only tasks in pending, scheduled, available, and retryable states are
+	// eligible for deadline cancellation; running tasks are left to finish
+	// or be cancelled through the regular cancellation path.
+	DeadlineAt time.Time
+
 	// ID overrides the workflow's automatically generated identifier. Workflow
 	// IDs must be globally unique; leave empty to use the auto-generated ULID.
 	ID string
@@ -177,6 +187,11 @@ func (w *Workflow[TTx]) renderTaskOpts(t *WorkflowTask) (*river.InsertOpts, erro
 		inject(rivercommon.MetadataKeyWorkflowName, w.name)
 	}
 	inject(rivercommon.MetadataKeyWorkflowTask, t.Name)
+	if !w.opts.DeadlineAt.IsZero() {
+		// UTC + RFC3339 so the scheduler's wall-clock comparison stays
+		// reader-agnostic across pod and DB locales.
+		inject(rivercommon.MetadataKeyWorkflowDeadlineAt, w.opts.DeadlineAt.UTC().Format(time.RFC3339Nano))
+	}
 	if len(t.deps) > 0 {
 		inject(rivercommon.MetadataKeyWorkflowDeps, t.deps)
 		opts.Pending = true

@@ -40,6 +40,12 @@ const (
 	// trick we use in Postgres doesn't work in SQLite.
 	MetadataKeyUniqueNonce = "river:unique_nonce"
 
+	// MetadataKeyWorkflowDeadlineAt records the workflow's deadline as an
+	// RFC3339 timestamp. Tasks of the workflow whose state is still
+	// non-terminal past this point are cancelled by the workflow scheduler
+	// with reason "workflow deadline exceeded".
+	MetadataKeyWorkflowDeadlineAt = "river:workflow_deadline_at"
+
 	// MetadataKeyWorkflowDeps holds a JSON array of task names that a
 	// workflow task depends on.
 	MetadataKeyWorkflowDeps = "river:workflow_deps"
