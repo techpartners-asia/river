@@ -92,6 +92,10 @@ type PeriodicJobOpts struct {
 // without regard for the state of the last scheduler. The RunOnStart option
 // can be used as a hedge to make sure that jobs with long run durations are
 // guaranteed to occasionally run.
+//
+// To make a periodic job's next run time durable across restarts, crashes, and
+// leader elections, assign a non-empty PeriodicJobOpts.ID and set
+// Config.DurablePeriodicJobs.Enabled. See DurablePeriodicJobsConfig.
 func NewPeriodicJob(scheduleFunc PeriodicSchedule, constructorFunc PeriodicJobConstructor, opts *PeriodicJobOpts) *PeriodicJob {
 	return &PeriodicJob{
 		constructorFunc: constructorFunc,

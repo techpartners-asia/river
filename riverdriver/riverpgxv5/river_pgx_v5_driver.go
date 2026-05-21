@@ -927,8 +927,15 @@ func (e *Executor) PeriodicJobGetAll(ctx context.Context, params *riverdriver.Pe
 }
 
 func (e *Executor) PeriodicJobKeepAliveAndReap(ctx context.Context, params *riverdriver.PeriodicJobKeepAliveAndReapParams) ([]*rivertype.DurablePeriodicJob, error) {
+	// Coerce nil to an empty slice so that `id = ANY($1)` evaluates against an
+	// empty array (no match) rather than NULL (unknown, which suppresses the
+	// reap clause).
+	ids := params.ID
+	if ids == nil {
+		ids = []string{}
+	}
 	rows, err := dbsqlc.New().PeriodicJobKeepAliveAndReap(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.PeriodicJobKeepAliveAndReapParams{
-		ID:           params.ID,
+		ID:           ids,
 		Now:          params.Now,
 		StaleHorizon: params.StaleHorizon,
 	})

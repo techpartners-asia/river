@@ -943,8 +943,12 @@ func (e *Executor) PeriodicJobGetAll(ctx context.Context, params *riverdriver.Pe
 }
 
 func (e *Executor) PeriodicJobKeepAliveAndReap(ctx context.Context, params *riverdriver.PeriodicJobKeepAliveAndReapParams) ([]*rivertype.DurablePeriodicJob, error) {
+	ids := params.ID
+	if ids == nil {
+		ids = []string{}
+	}
 	rows, err := dbsqlc.New().PeriodicJobKeepAliveAndReap(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.PeriodicJobKeepAliveAndReapParams{
-		ID:           params.ID,
+		ID:           ids,
 		Now:          params.Now,
 		StaleHorizon: params.StaleHorizon,
 	})
