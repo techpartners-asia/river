@@ -727,3 +727,93 @@ SET
     state = CASE WHEN @state_do_update::boolean THEN @state::/* TEMPLATE: schema */river_job_state ELSE state END
 WHERE id = @id
 RETURNING *;
+
+-- name: JobGetWorkflowTasks :many
+SELECT *
+FROM /* TEMPLATE: schema */river_job
+WHERE metadata->>'river:workflow_id' = @workflow_id::text
+  AND (
+    cardinality(@task_names::text[]) = 0
+    OR metadata->>'river:workflow_task' = ANY(@task_names::text[])
+  )
+ORDER BY id;
+
+-- name: JobCancelWorkflow :many
+UPDATE /* TEMPLATE: schema */river_job
+SET state        = 'cancelled',
+    finalized_at = @now::timestamptz,
+    errors       = errors || ARRAY[jsonb_build_object(
+      'at',      @now::timestamptz,
+      'attempt', attempt,
+      'error',   @reason::text,
+      'trace',   ''
+    )]::jsonb[]
+WHERE metadata->>'river:workflow_id' = @workflow_id::text
+  AND finalized_at IS NULL
+RETURNING *;
+
+-- name: JobUpdateWorkflowReady :many
+WITH candidates AS (
+  SELECT id, metadata, scheduled_at
+  FROM /* TEMPLATE: schema */river_job
+  WHERE state = 'pending'
+    AND metadata ? 'river:workflow_id'
+  ORDER BY id
+  FOR UPDATE SKIP LOCKED
+  LIMIT @max::int
+),
+dep_states AS (
+  SELECT
+    c.id AS candidate_id,
+    sib.state AS dep_state,
+    sib.metadata->>'river:workflow_task' AS dep_task
+  FROM candidates c
+  LEFT JOIN /* TEMPLATE: schema */river_job sib
+    ON sib.metadata->>'river:workflow_id' = c.metadata->>'river:workflow_id'
+   AND sib.metadata->>'river:workflow_task' IN (
+         SELECT jsonb_array_elements_text(c.metadata->'river:workflow_deps')
+       )
+),
+resolved AS (
+  SELECT
+    c.id,
+    c.scheduled_at,
+    c.metadata,
+    bool_and(
+      d.dep_state = 'completed'
+      OR (d.dep_state = 'cancelled' AND COALESCE((c.metadata->>'river:workflow_ignore_cancelled_deps')::bool, false))
+      OR (d.dep_state = 'discarded' AND COALESCE((c.metadata->>'river:workflow_ignore_discarded_deps')::bool, false))
+    ) FILTER (WHERE d.dep_state IS NOT NULL) AS all_done,
+    bool_or(
+      d.dep_state = 'cancelled' AND NOT COALESCE((c.metadata->>'river:workflow_ignore_cancelled_deps')::bool, false)
+    ) FILTER (WHERE d.dep_state IS NOT NULL) AS fail_cancelled,
+    bool_or(
+      d.dep_state = 'discarded' AND NOT COALESCE((c.metadata->>'river:workflow_ignore_discarded_deps')::bool, false)
+    ) FILTER (WHERE d.dep_state IS NOT NULL) AS fail_discarded,
+    count(d.dep_state) AS dep_rows_found,
+    COALESCE((SELECT count(*) FROM jsonb_array_elements_text(c.metadata->'river:workflow_deps')), 0) AS dep_rows_declared
+  FROM candidates c
+  LEFT JOIN dep_states d ON d.candidate_id = c.id
+  GROUP BY c.id, c.scheduled_at, c.metadata
+),
+classified AS (
+  SELECT
+    id,
+    CASE
+      WHEN fail_cancelled OR fail_discarded THEN 'cancelled'
+      WHEN dep_rows_found < dep_rows_declared
+        AND NOT COALESCE((metadata->>'river:workflow_ignore_deleted_deps')::bool, false) THEN 'cancelled'
+      WHEN COALESCE(all_done, true) AND dep_rows_found >= dep_rows_declared
+        AND scheduled_at > @now::timestamptz THEN 'scheduled'
+      WHEN COALESCE(all_done, true) AND dep_rows_found >= dep_rows_declared THEN 'available'
+      ELSE 'pending'
+    END AS new_state
+  FROM resolved
+)
+UPDATE /* TEMPLATE: schema */river_job j
+SET state        = c.new_state::river_job_state,
+    finalized_at = CASE WHEN c.new_state = 'cancelled' THEN @now::timestamptz ELSE j.finalized_at END
+FROM classified c
+WHERE j.id = c.id
+  AND c.new_state <> 'pending'
+RETURNING j.*;
