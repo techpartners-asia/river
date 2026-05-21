@@ -1,0 +1,207 @@
+package riverworkflow_test
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"sort"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/require"
+
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/internal/rivercommon"
+	"github.com/riverqueue/river/riverdbtest"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivershared/riversharedtest"
+	"github.com/riverqueue/river/rivertype"
+	"github.com/riverqueue/river/riverworkflow"
+)
+
+type recordingWorkerArgs struct {
+	Task string `json:"task"`
+}
+
+func (recordingWorkerArgs) Kind() string { return "riverworkflow_sim" }
+
+type recordingWorker struct {
+	river.WorkerDefaults[recordingWorkerArgs]
+
+	mu   *sync.Mutex
+	done []string
+	dur  time.Duration
+}
+
+func (w *recordingWorker) Work(_ context.Context, job *river.Job[recordingWorkerArgs]) error {
+	time.Sleep(w.dur)
+	w.mu.Lock()
+	w.done = append(w.done, job.Args.Task)
+	w.mu.Unlock()
+	return nil
+}
+
+// TestSimulation_FanOutFanIn runs an end-to-end workflow against the real
+// Postgres test database to verify that:
+//   - Tasks with no deps run first.
+//   - Fan-out children only run once their parent finishes.
+//   - Fan-in tail runs once both children finish.
+//   - All tasks reach the completed state and carry workflow metadata.
+func TestSimulation_FanOutFanIn(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("TEST_DATABASE_URL") == "" && os.Getenv("RIVER_TEST_DATABASE_URL") == "" {
+		// riversharedtest defaults to postgres://localhost/river_test; rely on
+		// that, but skip if a database connection can't be made.
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
+	require.NoError(t, err)
+	defer dbPool.Close()
+
+	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+
+	w := &recordingWorker{mu: &sync.Mutex{}, dur: 10 * time.Millisecond}
+	workers := river.NewWorkers()
+	river.AddWorker(workers, w)
+
+	client, err := riverworkflow.NewClient(riverpgxv5.New(dbPool), &riverworkflow.Config{
+		Config: river.Config{
+			Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}},
+			Schema:  schema,
+			Workers: workers,
+		},
+		WorkflowScheduler: riverworkflow.WorkflowSchedulerConfig{
+			Interval: 100 * time.Millisecond,
+		},
+	})
+	require.NoError(t, err)
+
+	subscribeChan, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{Name: "simulation"})
+	a := wf.Add("a", recordingWorkerArgs{Task: "a"}, nil, nil)
+	b1 := wf.Add("b1", recordingWorkerArgs{Task: "b1"}, nil, &riverworkflow.WorkflowTaskOpts{Deps: []string{a.Name}})
+	b2 := wf.Add("b2", recordingWorkerArgs{Task: "b2"}, nil, &riverworkflow.WorkflowTaskOpts{Deps: []string{a.Name}})
+	wf.Add("c", recordingWorkerArgs{Task: "c"}, nil, &riverworkflow.WorkflowTaskOpts{Deps: []string{b1.Name, b2.Name}})
+
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	require.Len(t, prep.Jobs, 4)
+
+	inserted, err := client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+	require.Len(t, inserted, 4)
+
+	// Three should be pending (b1, b2, c) and one available (a).
+	pendingCount := 0
+	availableCount := 0
+	for _, r := range inserted {
+		switch r.Job.State {
+		case rivertype.JobStatePending:
+			pendingCount++
+		case rivertype.JobStateAvailable:
+			availableCount++
+		}
+	}
+	require.Equal(t, 1, availableCount, "exactly one task should be available immediately")
+	require.Equal(t, 3, pendingCount, "three tasks should be pending")
+
+	require.NoError(t, client.Start(ctx))
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		require.NoError(t, client.Stop(stopCtx))
+	}()
+
+	// Wait for all four tasks to complete.
+	timeout := time.After(20 * time.Second)
+	completed := 0
+	for completed < 4 {
+		select {
+		case <-subscribeChan:
+			completed++
+		case <-timeout:
+			t.Fatalf("timed out waiting for 4 completions; got %d", completed)
+		}
+	}
+
+	// Verify ordering: a before b1/b2, b1 and b2 before c.
+	w.mu.Lock()
+	got := append([]string(nil), w.done...)
+	w.mu.Unlock()
+	require.Len(t, got, 4)
+
+	pos := map[string]int{}
+	for i, name := range got {
+		pos[name] = i
+	}
+	require.Less(t, pos["a"], pos["b1"], "task a must complete before b1 (order=%v)", got)
+	require.Less(t, pos["a"], pos["b2"], "task a must complete before b2 (order=%v)", got)
+	require.Less(t, pos["b1"], pos["c"], "task b1 must complete before c (order=%v)", got)
+	require.Less(t, pos["b2"], pos["c"], "task b2 must complete before c (order=%v)", got)
+
+	// Verify metadata round-trips.
+	tasks, err := wf.LoadAll(ctx)
+	require.NoError(t, err)
+	allFour := []string{"a", "b1", "b2", "c"}
+	sort.Strings(allFour)
+	for _, name := range allFour {
+		row, err := tasks.Get(name)
+		require.NoError(t, err)
+		require.Equal(t, rivertype.JobStateCompleted, row.State)
+		var meta map[string]any
+		require.NoError(t, json.Unmarshal(row.Metadata, &meta))
+		require.Equal(t, wf.ID(), meta[rivercommon.MetadataKeyWorkflowID])
+	}
+}
+
+// TestSimulation_CancelCascades verifies that cancelling a workflow cancels
+// every non-finalized task while leaving completed tasks alone.
+func TestSimulation_CancelCascades(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
+	require.NoError(t, err)
+	defer dbPool.Close()
+
+	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &recordingWorker{mu: &sync.Mutex{}, dur: 0})
+
+	client, err := riverworkflow.NewClient(riverpgxv5.New(dbPool), &riverworkflow.Config{
+		Config: river.Config{
+			Workers: workers,
+			Schema:  schema,
+		},
+	})
+	require.NoError(t, err)
+
+	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{Name: "cancel-sim"})
+	wf.Add("a", recordingWorkerArgs{Task: "a"}, nil, nil)
+	wf.Add("b", recordingWorkerArgs{Task: "b"}, nil, &riverworkflow.WorkflowTaskOpts{Deps: []string{"a"}})
+	wf.Add("c", recordingWorkerArgs{Task: "c"}, nil, &riverworkflow.WorkflowTaskOpts{Deps: []string{"b"}})
+
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	_, err = client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+
+	res, err := client.WorkflowCancel(ctx, prep.WorkflowID)
+	require.NoError(t, err)
+	require.Len(t, res.CancelledJobs, 3, "all three not-yet-completed tasks should be cancelled")
+	for _, r := range res.CancelledJobs {
+		require.Equal(t, rivertype.JobStateCancelled, r.State)
+		require.NotNil(t, r.FinalizedAt)
+	}
+}

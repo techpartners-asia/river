@@ -1876,7 +1876,7 @@ classified AS (
   FROM resolved
 )
 UPDATE /* TEMPLATE: schema */river_job j
-SET state        = c.new_state::river_job_state,
+SET state        = c.new_state::/* TEMPLATE: schema */river_job_state,
     finalized_at = CASE WHEN c.new_state = 'cancelled' THEN $1::timestamptz ELSE j.finalized_at END
 FROM classified c
 WHERE j.id = c.id
