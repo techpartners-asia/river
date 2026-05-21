@@ -42,6 +42,9 @@ type PeriodicJob struct {
 // To change a durable job's schedule, assign a new ID (the convention is to
 // append a version suffix like "_v2"). Orphaned rows are reaped after
 // StaleThreshold.
+//
+// Ignored when a custom pilot is in use, e.g. when running River Pro, which
+// has its own equivalent configuration.
 type DurablePeriodicJobsConfig struct {
 	// Enabled turns on durable scheduling for periodic jobs that have an ID.
 	Enabled bool
