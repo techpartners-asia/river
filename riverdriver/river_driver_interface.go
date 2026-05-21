@@ -201,6 +201,7 @@ type Executor interface {
 	IndexReindex(ctx context.Context, params *IndexReindexParams) error
 
 	JobCancel(ctx context.Context, params *JobCancelParams) (*rivertype.JobRow, error)
+	JobCancelWorkflow(ctx context.Context, params *JobCancelWorkflowParams) ([]*rivertype.JobRow, error)
 	JobCountByAllStates(ctx context.Context, params *JobCountByAllStatesParams) (map[rivertype.JobState]int, error)
 	JobCountByQueueAndState(ctx context.Context, params *JobCountByQueueAndStateParams) ([]*JobCountByQueueAndStateResult, error)
 	JobCountByState(ctx context.Context, params *JobCountByStateParams) (int, error)
@@ -212,6 +213,7 @@ type Executor interface {
 	JobGetByIDMany(ctx context.Context, params *JobGetByIDManyParams) ([]*rivertype.JobRow, error)
 	JobGetByKindMany(ctx context.Context, params *JobGetByKindManyParams) ([]*rivertype.JobRow, error)
 	JobGetStuck(ctx context.Context, params *JobGetStuckParams) ([]*rivertype.JobRow, error)
+	JobGetWorkflowTasks(ctx context.Context, params *JobGetWorkflowTasksParams) ([]*rivertype.JobRow, error)
 	JobInsertFastMany(ctx context.Context, params *JobInsertFastManyParams) ([]*JobInsertFastResult, error)
 	JobInsertFastManyNoReturning(ctx context.Context, params *JobInsertFastManyParams) (int, error)
 	JobInsertFull(ctx context.Context, params *JobInsertFullParams) (*rivertype.JobRow, error)
@@ -224,6 +226,7 @@ type Executor interface {
 	JobSetStateIfRunningMany(ctx context.Context, params *JobSetStateIfRunningManyParams) ([]*rivertype.JobRow, error)
 	JobUpdate(ctx context.Context, params *JobUpdateParams) (*rivertype.JobRow, error)
 	JobUpdateFull(ctx context.Context, params *JobUpdateFullParams) (*rivertype.JobRow, error)
+	JobUpdateWorkflowReady(ctx context.Context, params *JobUpdateWorkflowReadyParams) ([]*rivertype.JobRow, error)
 	LeaderAttemptElect(ctx context.Context, params *LeaderElectParams) (*Leader, error)
 	LeaderAttemptReelect(ctx context.Context, params *LeaderReelectParams) (*Leader, error)
 	LeaderDeleteExpired(ctx context.Context, params *LeaderDeleteExpiredParams) (int, error)
@@ -350,6 +353,15 @@ type JobCancelParams struct {
 	Schema            string
 }
 
+// JobCancelWorkflowParams are parameters for canceling every non-finalized
+// task in a workflow identified by WorkflowID.
+type JobCancelWorkflowParams struct {
+	Schema     string
+	WorkflowID string
+	Now        time.Time
+	Reason     string
+}
+
 type JobCountByAllStatesParams struct {
 	Schema string
 }
@@ -425,6 +437,14 @@ type JobGetStuckParams struct {
 	Max          int
 	Schema       string
 	StuckHorizon time.Time
+}
+
+// JobGetWorkflowTasksParams are parameters for retrieving all tasks belonging
+// to a workflow, with an optional filter to a specific set of task names.
+type JobGetWorkflowTasksParams struct {
+	Schema     string
+	WorkflowID string
+	TaskNames  []string // optional filter; empty means "all tasks"
 }
 
 type JobInsertFastParams struct {
@@ -665,6 +685,14 @@ type JobUpdateFullParams struct {
 	UniqueKeyDoUpdate bool
 	// Deprecated and will be removed when advisory lock unique path is removed.
 	UniqueKey []byte
+}
+
+// JobUpdateWorkflowReadyParams are parameters for transitioning workflow tasks
+// from pending to available when all of their dependencies have been satisfied.
+type JobUpdateWorkflowReadyParams struct {
+	Schema string
+	Max    int
+	Now    time.Time
 }
 
 // Leader represents a River leader.
