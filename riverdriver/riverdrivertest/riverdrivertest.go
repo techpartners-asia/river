@@ -46,6 +46,7 @@ func Exercise[TTx any](ctx context.Context, t *testing.T,
 	exerciseJobGetWorkflowTasks(ctx, t, executorWithTx)
 	exerciseJobUpdateWorkflowReady(ctx, t, executorWithTx)
 	exerciseLeader(ctx, t, executorWithTx)
+	exercisePeriodicJob(ctx, t, executorWithTx)
 	exerciseQueue(ctx, t, executorWithTx)
 }
 
