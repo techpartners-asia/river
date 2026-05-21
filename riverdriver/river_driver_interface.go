@@ -263,6 +263,18 @@ type Executor interface {
 	NotifyMany(ctx context.Context, params *NotifyManyParams) error
 	PGAdvisoryXactLock(ctx context.Context, key int64) (*struct{}, error)
 
+	// PeriodicJobGetAll gets all currently known durable periodic jobs.
+	PeriodicJobGetAll(ctx context.Context, params *PeriodicJobGetAllParams) ([]*rivertype.DurablePeriodicJob, error)
+
+	// PeriodicJobKeepAliveAndReap updates the `updated_at` timestamp for the
+	// given IDs (keeping them alive) and deletes any rows whose ID is not in
+	// the list and whose `updated_at` is older than `StaleHorizon`.
+	PeriodicJobKeepAliveAndReap(ctx context.Context, params *PeriodicJobKeepAliveAndReapParams) ([]*rivertype.DurablePeriodicJob, error)
+
+	// PeriodicJobUpsertMany inserts new or updates existing durable periodic
+	// jobs by ID, setting `next_run_at` and `updated_at` to the supplied values.
+	PeriodicJobUpsertMany(ctx context.Context, params *PeriodicJobUpsertManyParams) ([]*rivertype.DurablePeriodicJob, error)
+
 	QueueCreateOrSetUpdatedAt(ctx context.Context, params *QueueCreateOrSetUpdatedAtParams) (*rivertype.Queue, error)
 	QueueDeleteExpired(ctx context.Context, params *QueueDeleteExpiredParams) ([]string, error)
 	QueueGet(ctx context.Context, params *QueueGetParams) (*rivertype.Queue, error)
@@ -814,6 +826,39 @@ type NotifyManyParams struct {
 	Payload []string
 	Topic   string
 	Schema  string
+}
+
+type PeriodicJobGetAllParams struct {
+	Schema string
+}
+
+type PeriodicJobKeepAliveAndReapParams struct {
+	// ID is the set of currently-registered periodic job IDs. Rows whose ID is
+	// in this set have their `updated_at` timestamp bumped to keep them alive.
+	// Rows whose ID is not in this set, and whose `updated_at` is older than
+	// StaleHorizon, are deleted.
+	ID []string
+
+	Schema string
+
+	// StaleHorizon is the cutoff time before which orphaned rows (those whose
+	// ID is no longer registered) are considered stale and deleted.
+	StaleHorizon time.Time
+
+	// Now is the value used to set `updated_at` on touched rows. If zero, the
+	// database's `now()` is used.
+	Now *time.Time
+}
+
+type PeriodicJobUpsertManyParams struct {
+	Jobs   []PeriodicJobUpsertManyParamsJob
+	Schema string
+}
+
+type PeriodicJobUpsertManyParamsJob struct {
+	ID        string
+	NextRunAt time.Time
+	UpdatedAt time.Time
 }
 
 type ProducerKeepAliveParams struct {

@@ -918,6 +918,18 @@ func (e *Executor) PGAdvisoryXactLock(ctx context.Context, key int64) (*struct{}
 	return &struct{}{}, interpretError(err)
 }
 
+func (e *Executor) PeriodicJobGetAll(ctx context.Context, params *riverdriver.PeriodicJobGetAllParams) ([]*rivertype.DurablePeriodicJob, error) {
+	return nil, riverdriver.ErrNotImplemented
+}
+
+func (e *Executor) PeriodicJobKeepAliveAndReap(ctx context.Context, params *riverdriver.PeriodicJobKeepAliveAndReapParams) ([]*rivertype.DurablePeriodicJob, error) {
+	return nil, riverdriver.ErrNotImplemented
+}
+
+func (e *Executor) PeriodicJobUpsertMany(ctx context.Context, params *riverdriver.PeriodicJobUpsertManyParams) ([]*rivertype.DurablePeriodicJob, error) {
+	return nil, riverdriver.ErrNotImplemented
+}
+
 func (e *Executor) QueueCreateOrSetUpdatedAt(ctx context.Context, params *riverdriver.QueueCreateOrSetUpdatedAtParams) (*rivertype.Queue, error) {
 	queue, err := dbsqlc.New().QueueCreateOrSetUpdatedAt(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.QueueCreateOrSetUpdatedAtParams{
 		Metadata:  params.Metadata,
