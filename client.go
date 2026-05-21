@@ -254,6 +254,12 @@ type Config struct {
 	// insertion middlewares on either side of it are skipped.
 	Middleware []rivertype.Middleware
 
+	// DurablePeriodicJobs configures durable periodic jobs that persist their
+	// next run times across restarts, crashes, and leader elections. Only
+	// periodic jobs with a non-empty PeriodicJobOpts.ID become durable when
+	// Enabled is set; periodic jobs without an ID remain in-memory.
+	DurablePeriodicJobs DurablePeriodicJobsConfig
+
 	// PeriodicJobs are a set of periodic jobs to run at the specified intervals
 	// in the client.
 	PeriodicJobs []*PeriodicJob
@@ -434,11 +440,17 @@ func (c *Config) WithDefaults() *Config {
 		retryPolicy = &DefaultClientRetryPolicy{}
 	}
 
+	durablePeriodicJobs := c.DurablePeriodicJobs
+	if durablePeriodicJobs.Enabled && durablePeriodicJobs.StaleThreshold == 0 {
+		durablePeriodicJobs.StaleThreshold = 24 * time.Hour
+	}
+
 	return &Config{
 		AdvisoryLockPrefix:          c.AdvisoryLockPrefix,
 		CancelledJobRetentionPeriod: cmp.Or(c.CancelledJobRetentionPeriod, riversharedmaintenance.CancelledJobRetentionPeriodDefault),
 		CompletedJobRetentionPeriod: cmp.Or(c.CompletedJobRetentionPeriod, riversharedmaintenance.CompletedJobRetentionPeriodDefault),
 		DiscardedJobRetentionPeriod: cmp.Or(c.DiscardedJobRetentionPeriod, riversharedmaintenance.DiscardedJobRetentionPeriodDefault),
+		DurablePeriodicJobs:         durablePeriodicJobs,
 		ErrorHandler:                c.ErrorHandler,
 		FetchCooldown:               cmp.Or(c.FetchCooldown, FetchCooldownDefault),
 		FetchPollInterval:           cmp.Or(c.FetchPollInterval, FetchPollIntervalDefault),
@@ -478,6 +490,9 @@ func (c *Config) validate() error {
 	}
 	if c.DiscardedJobRetentionPeriod < -1 {
 		return errors.New("DiscardedJobRetentionPeriod cannot be less than zero, except for -1 (infinite)")
+	}
+	if c.DurablePeriodicJobs.StaleThreshold > 0 && c.DurablePeriodicJobs.StaleThreshold < time.Minute {
+		return errors.New("DurablePeriodicJobs.StaleThreshold must be at least 1 minute when set")
 	}
 	if c.FetchCooldown < FetchCooldownMin {
 		return fmt.Errorf("FetchCooldown must be at least %s", FetchCooldownMin)
@@ -837,7 +852,12 @@ func NewClient[TTx any](driver riverdriver.Driver[TTx], config *Config) (*Client
 	}
 
 	if client.pilot == nil {
-		client.pilot = &riverpilot.StandardPilot{}
+		client.pilot = &riverpilot.StandardPilot{
+			DurablePeriodicJobs: riverpilot.StandardPilotDurablePeriodicJobsConfig{
+				Enabled:        config.DurablePeriodicJobs.Enabled,
+				StaleThreshold: config.DurablePeriodicJobs.StaleThreshold,
+			},
+		}
 	}
 	client.pilot.PilotInit(archetype, (&riverpilot.PilotInitParams{
 		Insert:               client.insertMany,

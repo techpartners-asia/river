@@ -1399,7 +1399,11 @@ func (e *Executor) PeriodicJobGetAll(ctx context.Context, params *riverdriver.Pe
 }
 
 func (e *Executor) PeriodicJobKeepAliveAndReap(ctx context.Context, params *riverdriver.PeriodicJobKeepAliveAndReapParams) ([]*rivertype.DurablePeriodicJob, error) {
-	idsJSON, err := json.Marshal(params.ID)
+	ids := params.ID
+	if ids == nil {
+		ids = []string{}
+	}
+	idsJSON, err := json.Marshal(ids)
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling periodic job IDs: %w", err)
 	}

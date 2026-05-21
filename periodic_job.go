@@ -32,6 +32,27 @@ type PeriodicJob struct {
 	scheduleFunc    PeriodicSchedule
 }
 
+// DurablePeriodicJobsConfig configures durable periodic job scheduling.
+//
+// Durable scheduling persists each periodic job's next run time to the
+// river_periodic_job table, so the schedule survives restarts, crashes, and
+// leader elections. Only periodic jobs with a non-empty PeriodicJobOpts.ID
+// participate; jobs without an ID stay in-memory regardless of this setting.
+//
+// To change a durable job's schedule, assign a new ID (the convention is to
+// append a version suffix like "_v2"). Orphaned rows are reaped after
+// StaleThreshold.
+type DurablePeriodicJobsConfig struct {
+	// Enabled turns on durable scheduling for periodic jobs that have an ID.
+	Enabled bool
+
+	// StaleThreshold is the duration after which a periodic job row whose ID
+	// is no longer registered with any active client is considered orphaned
+	// and deleted by the keep-alive process. Defaults to 24 hours. Must be at
+	// least one minute when set explicitly.
+	StaleThreshold time.Duration
+}
+
 // PeriodicJobOpts are options for a periodic job.
 type PeriodicJobOpts struct {
 	// ID is an optional identifier for the job. Identifiers must be unique
