@@ -12,6 +12,50 @@ import (
 	"time"
 )
 
+const jobApplyWorkflowReady = `-- name: JobApplyWorkflowReady :one
+UPDATE /* TEMPLATE: schema */river_job
+SET state        = ?1,
+    finalized_at = CASE WHEN ?1 = 'cancelled' THEN cast(?2 AS text) ELSE finalized_at END
+WHERE id = ?3
+  AND state = 'pending'
+RETURNING id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+`
+
+type JobApplyWorkflowReadyParams struct {
+	NewState string
+	Now      string
+	ID       int64
+}
+
+// Applies a workflow-classified state transition to a single pending task.
+// The driver loops over JobClassifyWorkflowReady results and calls this once
+// per row whose new_state differs from 'pending'.
+func (q *Queries) JobApplyWorkflowReady(ctx context.Context, db DBTX, arg *JobApplyWorkflowReadyParams) (*RiverJob, error) {
+	row := db.QueryRowContext(ctx, jobApplyWorkflowReady, arg.NewState, arg.Now, arg.ID)
+	var i RiverJob
+	err := row.Scan(
+		&i.ID,
+		&i.Args,
+		&i.Attempt,
+		&i.AttemptedAt,
+		&i.AttemptedBy,
+		&i.CreatedAt,
+		&i.Errors,
+		&i.FinalizedAt,
+		&i.Kind,
+		&i.MaxAttempts,
+		&i.Metadata,
+		&i.Priority,
+		&i.Queue,
+		&i.State,
+		&i.ScheduledAt,
+		&i.Tags,
+		&i.UniqueKey,
+		&i.UniqueStates,
+	)
+	return &i, err
+}
+
 const jobCancel = `-- name: JobCancel :one
 UPDATE /* TEMPLATE: schema */river_job
 SET
@@ -66,6 +110,154 @@ func (q *Queries) JobCancel(ctx context.Context, db DBTX, arg *JobCancelParams) 
 		&i.UniqueStates,
 	)
 	return &i, err
+}
+
+const jobCancelWorkflow = `-- name: JobCancelWorkflow :many
+UPDATE /* TEMPLATE: schema */river_job
+SET state        = 'cancelled',
+    finalized_at = cast(?1 AS text),
+    metadata     = json_set(metadata, '$."river:workflow_cancel_reason"', cast(?2 AS text))
+WHERE json_extract(metadata, '$."river:workflow_id"') = cast(?3 AS text)
+  AND finalized_at IS NULL
+RETURNING id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+`
+
+type JobCancelWorkflowParams struct {
+	Now        string
+	Reason     string
+	WorkflowID string
+}
+
+func (q *Queries) JobCancelWorkflow(ctx context.Context, db DBTX, arg *JobCancelWorkflowParams) ([]*RiverJob, error) {
+	rows, err := db.QueryContext(ctx, jobCancelWorkflow, arg.Now, arg.Reason, arg.WorkflowID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*RiverJob
+	for rows.Next() {
+		var i RiverJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.Args,
+			&i.Attempt,
+			&i.AttemptedAt,
+			&i.AttemptedBy,
+			&i.CreatedAt,
+			&i.Errors,
+			&i.FinalizedAt,
+			&i.Kind,
+			&i.MaxAttempts,
+			&i.Metadata,
+			&i.Priority,
+			&i.Queue,
+			&i.State,
+			&i.ScheduledAt,
+			&i.Tags,
+			&i.UniqueKey,
+			&i.UniqueStates,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const jobClassifyWorkflowReady = `-- name: JobClassifyWorkflowReady :many
+WITH candidates AS (
+  SELECT j.id, j.metadata, j.scheduled_at
+  FROM /* TEMPLATE: schema */river_job j
+  WHERE j.state = 'pending'
+    AND json_extract(j.metadata, '$."river:workflow_id"') IS NOT NULL
+  ORDER BY j.id
+  LIMIT ?2
+),
+dep_states AS (
+  SELECT
+    c.id AS candidate_id,
+    sib.state AS dep_state
+  FROM candidates c
+  LEFT JOIN /* TEMPLATE: schema */river_job sib
+    ON json_extract(sib.metadata, '$."river:workflow_id"') = json_extract(c.metadata, '$."river:workflow_id"')
+   AND json_extract(sib.metadata, '$."river:workflow_task"') IN (
+         SELECT value FROM json_each(json_extract(c.metadata, '$."river:workflow_deps"'))
+       )
+),
+resolved AS (
+  SELECT
+    c.id,
+    c.scheduled_at,
+    c.metadata,
+    MIN(CASE
+        WHEN d.dep_state IS NULL THEN 1
+        WHEN d.dep_state = 'completed' THEN 1
+        WHEN d.dep_state = 'cancelled' AND coalesce(json_extract(c.metadata, '$."river:workflow_ignore_cancelled_deps"'), 0) = 1 THEN 1
+        WHEN d.dep_state = 'discarded' AND coalesce(json_extract(c.metadata, '$."river:workflow_ignore_discarded_deps"'), 0) = 1 THEN 1
+        ELSE 0
+    END) AS all_done,
+    MAX(CASE WHEN d.dep_state = 'cancelled' AND coalesce(json_extract(c.metadata, '$."river:workflow_ignore_cancelled_deps"'), 0) <> 1 THEN 1 ELSE 0 END) AS fail_cancelled,
+    MAX(CASE WHEN d.dep_state = 'discarded' AND coalesce(json_extract(c.metadata, '$."river:workflow_ignore_discarded_deps"'), 0) <> 1 THEN 1 ELSE 0 END) AS fail_discarded,
+    SUM(CASE WHEN d.dep_state IS NOT NULL THEN 1 ELSE 0 END) AS dep_rows_found,
+    coalesce((SELECT count(*) FROM json_each(json_extract(c.metadata, '$."river:workflow_deps"'))), 0) AS dep_rows_declared
+  FROM candidates c
+  LEFT JOIN dep_states d ON d.candidate_id = c.id
+  GROUP BY c.id, c.scheduled_at, c.metadata
+)
+SELECT
+  id,
+  cast(CASE
+    WHEN fail_cancelled = 1 OR fail_discarded = 1 THEN 'cancelled'
+    WHEN dep_rows_found < dep_rows_declared
+      AND coalesce(json_extract(metadata, '$."river:workflow_ignore_deleted_deps"'), 0) <> 1 THEN 'cancelled'
+    WHEN all_done = 1 AND dep_rows_found >= dep_rows_declared
+      AND datetime(scheduled_at) > datetime(cast(?1 AS text)) THEN 'scheduled'
+    WHEN all_done = 1 AND dep_rows_found >= dep_rows_declared THEN 'available'
+    ELSE 'pending'
+  END AS text) AS new_state
+FROM resolved
+`
+
+type JobClassifyWorkflowReadyParams struct {
+	Now string
+	Max int64
+}
+
+type JobClassifyWorkflowReadyRow struct {
+	ID       int64
+	NewState string
+}
+
+// Classifies pending workflow tasks into their next state. The driver applies
+// the classification via a follow-up UPDATE per row, so this query only reads.
+// (SQLite's sqlc cannot CTE into an UPDATE the way Postgres can.)
+func (q *Queries) JobClassifyWorkflowReady(ctx context.Context, db DBTX, arg *JobClassifyWorkflowReadyParams) ([]*JobClassifyWorkflowReadyRow, error) {
+	rows, err := db.QueryContext(ctx, jobClassifyWorkflowReady, arg.Now, arg.Max)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*JobClassifyWorkflowReadyRow
+	for rows.Next() {
+		var i JobClassifyWorkflowReadyRow
+		if err := rows.Scan(&i.ID, &i.NewState); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const jobCountByAllStates = `-- name: JobCountByAllStates :many
@@ -573,6 +765,57 @@ type JobGetStuckParams struct {
 
 func (q *Queries) JobGetStuck(ctx context.Context, db DBTX, arg *JobGetStuckParams) ([]*RiverJob, error) {
 	rows, err := db.QueryContext(ctx, jobGetStuck, arg.StuckHorizon, arg.Max)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*RiverJob
+	for rows.Next() {
+		var i RiverJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.Args,
+			&i.Attempt,
+			&i.AttemptedAt,
+			&i.AttemptedBy,
+			&i.CreatedAt,
+			&i.Errors,
+			&i.FinalizedAt,
+			&i.Kind,
+			&i.MaxAttempts,
+			&i.Metadata,
+			&i.Priority,
+			&i.Queue,
+			&i.State,
+			&i.ScheduledAt,
+			&i.Tags,
+			&i.UniqueKey,
+			&i.UniqueStates,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const jobGetWorkflowTasks = `-- name: JobGetWorkflowTasks :many
+SELECT id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+FROM /* TEMPLATE: schema */river_job
+WHERE json_extract(metadata, '$."river:workflow_id"') = cast(?1 AS text)
+ORDER BY id
+`
+
+// Returns every task for a workflow. The driver filters by TaskName slice in
+// Go since sqlc's SQLite slice support is finicky in combined queries.
+func (q *Queries) JobGetWorkflowTasks(ctx context.Context, db DBTX, workflowID string) ([]*RiverJob, error) {
+	rows, err := db.QueryContext(ctx, jobGetWorkflowTasks, workflowID)
 	if err != nil {
 		return nil, err
 	}

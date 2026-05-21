@@ -276,7 +276,15 @@ func (e *Executor) JobCancel(ctx context.Context, params *riverdriver.JobCancelP
 }
 
 func (e *Executor) JobCancelWorkflow(ctx context.Context, params *riverdriver.JobCancelWorkflowParams) ([]*rivertype.JobRow, error) {
-	return nil, riverdriver.ErrNotImplemented
+	jobs, err := dbsqlc.New().JobCancelWorkflow(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobCancelWorkflowParams{
+		Now:        timeString(params.Now),
+		Reason:     params.Reason,
+		WorkflowID: params.WorkflowID,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
 }
 
 func (e *Executor) JobCountByAllStates(ctx context.Context, params *riverdriver.JobCountByAllStatesParams) (map[rivertype.JobState]int, error) {
@@ -520,7 +528,40 @@ func (e *Executor) JobGetStuck(ctx context.Context, params *riverdriver.JobGetSt
 }
 
 func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.JobGetWorkflowTasksParams) ([]*rivertype.JobRow, error) {
-	return nil, riverdriver.ErrNotImplemented
+	jobs, err := dbsqlc.New().JobGetWorkflowTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, params.WorkflowID)
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	rows, err := sliceutil.MapError(jobs, jobRowFromInternal)
+	if err != nil {
+		return nil, err
+	}
+	if len(params.TaskNames) == 0 {
+		return rows, nil
+	}
+	want := make(map[string]struct{}, len(params.TaskNames))
+	for _, n := range params.TaskNames {
+		want[n] = struct{}{}
+	}
+	filtered := rows[:0]
+	for _, r := range rows {
+		var meta map[string]json.RawMessage
+		if err := json.Unmarshal(r.Metadata, &meta); err != nil {
+			return nil, fmt.Errorf("workflow task metadata: %w", err)
+		}
+		raw, ok := meta[rivercommon.MetadataKeyWorkflowTask]
+		if !ok {
+			continue
+		}
+		var name string
+		if err := json.Unmarshal(raw, &name); err != nil {
+			return nil, fmt.Errorf("workflow task name: %w", err)
+		}
+		if _, ok := want[name]; ok {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered, nil
 }
 
 func (e *Executor) JobInsertFastMany(ctx context.Context, params *riverdriver.JobInsertFastManyParams) ([]*riverdriver.JobInsertFastResult, error) {
@@ -1108,7 +1149,43 @@ func (e *Executor) JobUpdateFull(ctx context.Context, params *riverdriver.JobUpd
 }
 
 func (e *Executor) JobUpdateWorkflowReady(ctx context.Context, params *riverdriver.JobUpdateWorkflowReadyParams) ([]*rivertype.JobRow, error) {
-	return nil, riverdriver.ErrNotImplemented
+	max := params.Max
+	if max <= 0 {
+		max = math.MaxInt32
+	}
+	nowStr := timeString(params.Now)
+	queries := dbsqlc.New()
+	classified, err := queries.JobClassifyWorkflowReady(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobClassifyWorkflowReadyParams{
+		Max: int64(max),
+		Now: nowStr,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+
+	out := make([]*rivertype.JobRow, 0, len(classified))
+	for _, row := range classified {
+		if row.NewState == "" || row.NewState == "pending" {
+			continue
+		}
+		job, err := queries.JobApplyWorkflowReady(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobApplyWorkflowReadyParams{
+			ID:       row.ID,
+			NewState: row.NewState,
+			Now:      nowStr,
+		})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, interpretError(err)
+		}
+		mapped, err := jobRowFromInternal(job)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mapped)
+	}
+	return out, nil
 }
 
 func (e *Executor) LeaderAttemptElect(ctx context.Context, params *riverdriver.LeaderElectParams) (*riverdriver.Leader, error) {
