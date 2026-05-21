@@ -12,4 +12,5 @@ use (
 	./riverdriver/riversqlite
 	./rivershared
 	./rivertype
+	./riverworkflow
 )
