@@ -208,7 +208,15 @@ func (e *Executor) JobCancel(ctx context.Context, params *riverdriver.JobCancelP
 }
 
 func (e *Executor) JobCancelWorkflow(ctx context.Context, params *riverdriver.JobCancelWorkflowParams) ([]*rivertype.JobRow, error) {
-	return nil, riverdriver.ErrNotImplemented
+	jobs, err := dbsqlc.New().JobCancelWorkflow(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobCancelWorkflowParams{
+		Now:        params.Now,
+		Reason:     params.Reason,
+		WorkflowID: params.WorkflowID,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
 }
 
 func (e *Executor) JobCountByAllStates(ctx context.Context, params *riverdriver.JobCountByAllStatesParams) (map[rivertype.JobState]int, error) {
@@ -346,7 +354,18 @@ func (e *Executor) JobGetStuck(ctx context.Context, params *riverdriver.JobGetSt
 }
 
 func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.JobGetWorkflowTasksParams) ([]*rivertype.JobRow, error) {
-	return nil, riverdriver.ErrNotImplemented
+	taskNames := params.TaskNames
+	if taskNames == nil {
+		taskNames = []string{}
+	}
+	jobs, err := dbsqlc.New().JobGetWorkflowTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowTasksParams{
+		WorkflowID: params.WorkflowID,
+		TaskNames:  taskNames,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
 }
 
 func (e *Executor) JobInsertFastMany(ctx context.Context, params *riverdriver.JobInsertFastManyParams) ([]*riverdriver.JobInsertFastResult, error) {
@@ -725,7 +744,18 @@ func (e *Executor) JobUpdateFull(ctx context.Context, params *riverdriver.JobUpd
 }
 
 func (e *Executor) JobUpdateWorkflowReady(ctx context.Context, params *riverdriver.JobUpdateWorkflowReadyParams) ([]*rivertype.JobRow, error) {
-	return nil, riverdriver.ErrNotImplemented
+	max := params.Max
+	if max <= 0 || max > math.MaxInt32 {
+		max = math.MaxInt32
+	}
+	jobs, err := dbsqlc.New().JobUpdateWorkflowReady(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobUpdateWorkflowReadyParams{
+		Max: int32(max), //nolint:gosec
+		Now: params.Now,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
 }
 
 func (e *Executor) LeaderAttemptElect(ctx context.Context, params *riverdriver.LeaderElectParams) (*riverdriver.Leader, error) {
