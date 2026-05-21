@@ -919,15 +919,62 @@ func (e *Executor) PGAdvisoryXactLock(ctx context.Context, key int64) (*struct{}
 }
 
 func (e *Executor) PeriodicJobGetAll(ctx context.Context, params *riverdriver.PeriodicJobGetAllParams) ([]*rivertype.DurablePeriodicJob, error) {
-	return nil, riverdriver.ErrNotImplemented
+	rows, err := dbsqlc.New().PeriodicJobGetAll(schemaTemplateParam(ctx, params.Schema), e.dbtx)
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.Map(rows, periodicJobFromInternal), nil
 }
 
 func (e *Executor) PeriodicJobKeepAliveAndReap(ctx context.Context, params *riverdriver.PeriodicJobKeepAliveAndReapParams) ([]*rivertype.DurablePeriodicJob, error) {
-	return nil, riverdriver.ErrNotImplemented
+	rows, err := dbsqlc.New().PeriodicJobKeepAliveAndReap(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.PeriodicJobKeepAliveAndReapParams{
+		ID:           params.ID,
+		Now:          params.Now,
+		StaleHorizon: params.StaleHorizon,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.Map(rows, periodicJobReapFromInternal), nil
 }
 
 func (e *Executor) PeriodicJobUpsertMany(ctx context.Context, params *riverdriver.PeriodicJobUpsertManyParams) ([]*rivertype.DurablePeriodicJob, error) {
-	return nil, riverdriver.ErrNotImplemented
+	if len(params.Jobs) == 0 {
+		return nil, nil
+	}
+	upsertParams := &dbsqlc.PeriodicJobUpsertManyParams{
+		ID:        make([]string, len(params.Jobs)),
+		NextRunAt: make([]time.Time, len(params.Jobs)),
+		UpdatedAt: make([]time.Time, len(params.Jobs)),
+	}
+	for i, job := range params.Jobs {
+		upsertParams.ID[i] = job.ID
+		upsertParams.NextRunAt[i] = job.NextRunAt
+		upsertParams.UpdatedAt[i] = job.UpdatedAt
+	}
+	rows, err := dbsqlc.New().PeriodicJobUpsertMany(schemaTemplateParam(ctx, params.Schema), e.dbtx, upsertParams)
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.Map(rows, periodicJobFromInternal), nil
+}
+
+func periodicJobFromInternal(internal *dbsqlc.RiverPeriodicJob) *rivertype.DurablePeriodicJob {
+	return &rivertype.DurablePeriodicJob{
+		ID:        internal.ID,
+		CreatedAt: internal.CreatedAt,
+		NextRunAt: internal.NextRunAt,
+		UpdatedAt: internal.UpdatedAt,
+	}
+}
+
+func periodicJobReapFromInternal(internal *dbsqlc.PeriodicJobKeepAliveAndReapRow) *rivertype.DurablePeriodicJob {
+	return &rivertype.DurablePeriodicJob{
+		ID:        internal.ID,
+		CreatedAt: internal.CreatedAt,
+		NextRunAt: internal.NextRunAt,
+		UpdatedAt: internal.UpdatedAt,
+	}
 }
 
 func (e *Executor) QueueCreateOrSetUpdatedAt(ctx context.Context, params *riverdriver.QueueCreateOrSetUpdatedAtParams) (*rivertype.Queue, error) {

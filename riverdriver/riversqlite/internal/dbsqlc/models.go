@@ -61,6 +61,13 @@ type RiverMigration struct {
 	CreatedAt time.Time
 }
 
+type RiverPeriodicJob struct {
+	ID        string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	NextRunAt time.Time
+}
+
 type RiverQueue struct {
 	Name      string
 	CreatedAt time.Time

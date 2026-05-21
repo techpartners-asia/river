@@ -1391,15 +1391,85 @@ func (e *Executor) PGAdvisoryXactLock(ctx context.Context, key int64) (*struct{}
 }
 
 func (e *Executor) PeriodicJobGetAll(ctx context.Context, params *riverdriver.PeriodicJobGetAllParams) ([]*rivertype.DurablePeriodicJob, error) {
-	return nil, riverdriver.ErrNotImplemented
+	rows, err := dbsqlc.New().PeriodicJobGetAll(schemaTemplateParam(ctx, params.Schema), e.dbtx)
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.Map(rows, periodicJobFromInternal), nil
 }
 
 func (e *Executor) PeriodicJobKeepAliveAndReap(ctx context.Context, params *riverdriver.PeriodicJobKeepAliveAndReapParams) ([]*rivertype.DurablePeriodicJob, error) {
-	return nil, riverdriver.ErrNotImplemented
+	idsJSON, err := json.Marshal(params.ID)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling periodic job IDs: %w", err)
+	}
+
+	var reapedRows []*dbsqlc.RiverPeriodicJob
+	if err := dbutil.WithTx(ctx, e, func(ctx context.Context, execTx riverdriver.ExecutorTx) error {
+		ctx = schemaTemplateParam(ctx, params.Schema)
+		dbtx := templateReplaceWrapper{dbtx: e.driver.UnwrapTx(execTx), replacer: &e.driver.replacer}
+
+		if err := dbsqlc.New().PeriodicJobKeepAlive(ctx, dbtx, &dbsqlc.PeriodicJobKeepAliveParams{
+			IdsJson: idsJSON,
+			Now:     timeStringNullable(params.Now),
+		}); err != nil {
+			return interpretError(err)
+		}
+
+		reaped, err := dbsqlc.New().PeriodicJobReap(ctx, dbtx, &dbsqlc.PeriodicJobReapParams{
+			IdsJson:      idsJSON,
+			StaleHorizon: timeString(params.StaleHorizon),
+		})
+		if err != nil {
+			return interpretError(err)
+		}
+		reapedRows = reaped
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return sliceutil.Map(reapedRows, periodicJobFromInternal), nil
 }
 
 func (e *Executor) PeriodicJobUpsertMany(ctx context.Context, params *riverdriver.PeriodicJobUpsertManyParams) ([]*rivertype.DurablePeriodicJob, error) {
-	return nil, riverdriver.ErrNotImplemented
+	if len(params.Jobs) == 0 {
+		return nil, nil
+	}
+
+	results := make([]*rivertype.DurablePeriodicJob, len(params.Jobs))
+	if err := dbutil.WithTx(ctx, e, func(ctx context.Context, execTx riverdriver.ExecutorTx) error {
+		ctx = schemaTemplateParam(ctx, params.Schema)
+		dbtx := templateReplaceWrapper{dbtx: e.driver.UnwrapTx(execTx), replacer: &e.driver.replacer}
+
+		// SQLite/sqlc don't support batch inserts; loop one row at a time.
+		// See https://github.com/sqlc-dev/sqlc/issues/3802.
+		for i, job := range params.Jobs {
+			row, err := dbsqlc.New().PeriodicJobUpsert(ctx, dbtx, &dbsqlc.PeriodicJobUpsertParams{
+				ID:        job.ID,
+				NextRunAt: timeString(job.NextRunAt),
+				UpdatedAt: timeString(job.UpdatedAt),
+			})
+			if err != nil {
+				return interpretError(err)
+			}
+			results[i] = periodicJobFromInternal(row)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
+func periodicJobFromInternal(internal *dbsqlc.RiverPeriodicJob) *rivertype.DurablePeriodicJob {
+	return &rivertype.DurablePeriodicJob{
+		ID:        internal.ID,
+		CreatedAt: internal.CreatedAt,
+		NextRunAt: internal.NextRunAt,
+		UpdatedAt: internal.UpdatedAt,
+	}
 }
 
 func (e *Executor) QueueCreateOrSetUpdatedAt(ctx context.Context, params *riverdriver.QueueCreateOrSetUpdatedAtParams) (*rivertype.Queue, error) {
