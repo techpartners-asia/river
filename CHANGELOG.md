@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New `riverworkflow` submodule providing fan-out / fan-in workflow DAGs with a leader-elected `WorkflowScheduler` maintenance service. Mirrors the riverpro `Workflow` API: `Client.NewWorkflow`, `Workflow.Add`, `Workflow.Prepare`/`PrepareTx`, `Client.WorkflowCancel`/`WorkflowCancelTx`, `Client.WorkflowFromExisting`, and `Workflow.LoadDeps`/`LoadAll` plus their Tx variants. See `riverworkflow/README.md`.
+- New driver methods on `riverdriver.Executor`: `JobCancelWorkflow`, `JobGetWorkflowTasks`, `JobUpdateWorkflowReady`, implemented across `riverpgxv5`, `riverdatabasesql`, and `riversqlite`. (`riversqlite` additionally exposes `JobClassifyWorkflowReady` and `JobApplyWorkflowReady` as a two-step variant due to a sqlc SQLite limitation; both are internal to the driver.)
+- New migration `007_workflow_index` adds an index on `metadata->>'river:workflow_id'` (or the SQLite equivalent) for efficient workflow lookups by the scheduler.
+
 ## [0.37.1] - 2026-05-15
 
 ### Fixed
