@@ -150,6 +150,22 @@ func TestWorkflow_Prepare_IgnoreFlags(t *testing.T) {
 	require.NotContains(t, metaB, rivercommon.MetadataKeyWorkflowIgnoreDiscardedDeps)
 }
 
+// C3: Large integers in existing metadata must not lose precision through
+// float64 conversion when renderTaskOpts merges workflow keys.
+func TestWorkflow_Prepare_PreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	w := newWorkflow[any](nil, nil, "")
+	preset, err := json.Marshal(map[string]any{"snowflake_id": json.Number("123456789012345678")})
+	require.NoError(t, err)
+	w.Add("a", sortArgs{}, &river.InsertOpts{Metadata: preset}, nil)
+
+	res, err := w.Prepare(ctx)
+	require.NoError(t, err)
+	require.Contains(t, string(res.Jobs[0].InsertOpts.Metadata), `"snowflake_id":123456789012345678`,
+		"large integer must be preserved exactly; got %s", res.Jobs[0].InsertOpts.Metadata)
+}
+
 func TestWorkflow_Prepare_PreservesExistingMetadata(t *testing.T) {
 	t.Parallel()
 

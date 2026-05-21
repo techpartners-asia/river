@@ -14,6 +14,8 @@ import (
 	"github.com/riverqueue/river/rivershared/riversharedmaintenance"
 	"github.com/riverqueue/river/rivershared/startstop"
 	"github.com/riverqueue/river/rivershared/testsignal"
+	"github.com/riverqueue/river/rivershared/util/randutil"
+	"github.com/riverqueue/river/rivershared/util/serviceutil"
 	"github.com/riverqueue/river/rivershared/util/testutil"
 	"github.com/riverqueue/river/rivershared/util/timeutil"
 )
@@ -105,8 +107,14 @@ func (s *WorkflowScheduler) Start(ctx context.Context) error {
 
 func (s *WorkflowScheduler) runOnce(ctx context.Context) error {
 	for {
-		ctx, cancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
-		rows, err := s.exec.JobUpdateWorkflowReady(ctx, &riverdriver.JobUpdateWorkflowReadyParams{
+		// H3: Check outer context before each iteration so total runOnce time is
+		// bounded even when every individual per-iteration timeout is 30 s.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		iterCtx, cancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
+		rows, err := s.exec.JobUpdateWorkflowReady(iterCtx, &riverdriver.JobUpdateWorkflowReadyParams{
 			Max:    s.config.BatchSize,
 			Now:    s.Time.Now(),
 			Schema: s.config.Schema,
@@ -121,5 +129,11 @@ func (s *WorkflowScheduler) runOnce(ctx context.Context) error {
 		if len(rows) < s.config.BatchSize {
 			return nil
 		}
+
+		// H1: Full batch returned — more rows likely remain. Sleep briefly before
+		// the next iteration to avoid hot-spinning and to give other services a
+		// chance to run, matching the pattern used by job_scheduler and
+		// job_rescuer in the core maintenance package.
+		serviceutil.CancellableSleep(ctx, randutil.DurationBetween(riversharedmaintenance.BatchBackoffMin, riversharedmaintenance.BatchBackoffMax))
 	}
 }

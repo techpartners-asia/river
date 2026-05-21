@@ -3,6 +3,7 @@ package riverworkflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,6 +29,9 @@ type Client[TTx any] struct {
 // It also installs a leader-elected workflow scheduler service into the
 // underlying [*river.Client] via the driver-plugin mechanism.
 func NewClient[TTx any](driver riverdriver.Driver[TTx], config *Config) (*Client[TTx], error) {
+	if driver == nil {
+		return nil, errors.New("riverworkflow: driver is required")
+	}
 	if config == nil {
 		config = &Config{}
 	}
@@ -160,6 +164,9 @@ func workflowIDFromMetadata(metadata []byte) (string, error) {
 	var id string
 	if err := json.Unmarshal(raw, &id); err != nil {
 		return "", fmt.Errorf("riverworkflow: parse workflow id: %w", err)
+	}
+	if id == "" {
+		return "", fmt.Errorf("riverworkflow: workflow id in job metadata is empty")
 	}
 	return id, nil
 }

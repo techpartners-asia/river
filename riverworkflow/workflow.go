@@ -157,19 +157,28 @@ func (w *Workflow[TTx]) renderTaskOpts(t *WorkflowTask) (*river.InsertOpts, erro
 		opts = *t.jobOpts
 	}
 
-	metadata := map[string]any{}
+	// Use map[string]json.RawMessage so existing numeric values (e.g. Snowflake
+	// IDs, nanosecond timestamps) are kept as opaque JSON bytes and never
+	// round-tripped through float64.
+	metadata := map[string]json.RawMessage{}
 	if len(opts.Metadata) > 0 {
 		if err := json.Unmarshal(opts.Metadata, &metadata); err != nil {
 			return nil, fmt.Errorf("riverworkflow: parse existing metadata for task %q: %w", t.Name, err)
 		}
 	}
-	metadata[rivercommon.MetadataKeyWorkflowID] = w.id
-	if w.name != "" {
-		metadata[rivercommon.MetadataKeyWorkflowName] = w.name
+
+	// inject encodes value and stores it, workflow keys override existing ones.
+	inject := func(key string, value any) {
+		enc, _ := json.Marshal(value)
+		metadata[key] = enc
 	}
-	metadata[rivercommon.MetadataKeyWorkflowTask] = t.Name
+	inject(rivercommon.MetadataKeyWorkflowID, w.id)
+	if w.name != "" {
+		inject(rivercommon.MetadataKeyWorkflowName, w.name)
+	}
+	inject(rivercommon.MetadataKeyWorkflowTask, t.Name)
 	if len(t.deps) > 0 {
-		metadata[rivercommon.MetadataKeyWorkflowDeps] = t.deps
+		inject(rivercommon.MetadataKeyWorkflowDeps, t.deps)
 		opts.Pending = true
 	}
 
@@ -177,10 +186,10 @@ func (w *Workflow[TTx]) renderTaskOpts(t *WorkflowTask) (*river.InsertOpts, erro
 		switch {
 		case taskFlag != nil:
 			if *taskFlag {
-				metadata[key] = true
+				inject(key, true)
 			}
 		case workflowFlag:
-			metadata[key] = true
+			inject(key, true)
 		}
 	}
 	applyIgnore(t.ignoreCancelled, w.opts.IgnoreCancelledDeps, rivercommon.MetadataKeyWorkflowIgnoreCancelledDeps)

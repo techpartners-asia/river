@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/riverqueue/river/internal/rivercommon"
 	"github.com/riverqueue/river/riverdriver"
@@ -99,14 +100,21 @@ func tasksFromRows(rows []*rivertype.JobRow) *WorkflowTasks {
 	for _, r := range rows {
 		var meta map[string]json.RawMessage
 		if err := json.Unmarshal(r.Metadata, &meta); err != nil {
+			slog.Default().Warn("riverworkflow: skipping task with unparseable metadata",
+				slog.Int64("job_id", r.ID),
+				slog.String("error", err.Error()))
 			continue
 		}
 		raw, ok := meta[rivercommon.MetadataKeyWorkflowTask]
 		if !ok {
+			// Not a workflow task; skip silently — that's normal.
 			continue
 		}
 		var name string
 		if err := json.Unmarshal(raw, &name); err != nil || name == "" {
+			slog.Default().Warn("riverworkflow: skipping task with malformed task name",
+				slog.Int64("job_id", r.ID),
+				slog.String("error", fmt.Sprintf("%v", err)))
 			continue
 		}
 		out.byName[name] = r

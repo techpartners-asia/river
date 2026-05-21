@@ -1,7 +1,9 @@
 package riverworkflow
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -72,6 +74,26 @@ func TestTasksFromRows(t *testing.T) {
 	require.Len(t, wt.byName, 2)
 	require.Equal(t, int64(1), wt.byName["a"].ID)
 	require.Equal(t, int64(2), wt.byName["b"].ID)
+}
+
+// H2: tasksFromRows should log a warning (not silently skip) when a row has
+// malformed (non-JSON) metadata. We verify by capturing slog.Default output.
+// NOTE: This test is NOT parallel because it mutates the process-global slog.Default.
+func TestTasksFromRows_LogsMalformedMetadata(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	logger := slog.New(handler)
+	orig := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	rows := []*rivertype.JobRow{
+		{ID: 99, Metadata: []byte(`not-valid-json`)},
+	}
+	wt := tasksFromRows(rows)
+	require.Empty(t, wt.byName, "row with bad metadata must be skipped")
+	require.Contains(t, buf.String(), "skipping task with unparseable metadata",
+		"expected warning log for malformed metadata; got: %s", buf.String())
 }
 
 func TestWalkDeps(t *testing.T) {
