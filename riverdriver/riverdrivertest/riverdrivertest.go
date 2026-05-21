@@ -41,6 +41,9 @@ func Exercise[TTx any](ctx context.Context, t *testing.T,
 	exerciseJobRead(ctx, t, executorWithTx)
 	exerciseJobUpdate(ctx, t, executorWithTx)
 	exerciseJobDelete(ctx, t, executorWithTx)
+	exerciseJobCancelWorkflow(ctx, t, executorWithTx)
+	exerciseJobGetWorkflowTasks(ctx, t, executorWithTx)
+	exerciseJobUpdateWorkflowReady(ctx, t, executorWithTx)
 	exerciseLeader(ctx, t, executorWithTx)
 	exerciseQueue(ctx, t, executorWithTx)
 }
