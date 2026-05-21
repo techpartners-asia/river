@@ -6,6 +6,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMetadataKeyWorkflow(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "river:workflow_id", MetadataKeyWorkflowID)
+	require.Equal(t, "river:workflow_name", MetadataKeyWorkflowName)
+	require.Equal(t, "river:workflow_task", MetadataKeyWorkflowTask)
+	require.Equal(t, "river:workflow_deps", MetadataKeyWorkflowDeps)
+	require.Equal(t, "river:workflow_ignore_cancelled_deps", MetadataKeyWorkflowIgnoreCancelledDeps)
+	require.Equal(t, "river:workflow_ignore_discarded_deps", MetadataKeyWorkflowIgnoreDiscardedDeps)
+	require.Equal(t, "river:workflow_ignore_deleted_deps", MetadataKeyWorkflowIgnoreDeletedDeps)
+}
+
 func TestJobKindRE(t *testing.T) {
 	t.Parallel()
 

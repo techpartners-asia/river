@@ -39,6 +39,29 @@ const (
 	// determine whether an upsert is was skipped or not because the `(xmax != 0)`
 	// trick we use in Postgres doesn't work in SQLite.
 	MetadataKeyUniqueNonce = "river:unique_nonce"
+
+	// MetadataKeyWorkflowDeps holds a JSON array of task names that a
+	// workflow task depends on.
+	MetadataKeyWorkflowDeps = "river:workflow_deps"
+
+	// MetadataKeyWorkflowID identifies the workflow a task belongs to.
+	MetadataKeyWorkflowID = "river:workflow_id"
+
+	// MetadataKeyWorkflowIgnoreCancelledDeps, when set to true, causes a
+	// cancelled dep to be treated as a successful dep for promotion.
+	MetadataKeyWorkflowIgnoreCancelledDeps = "river:workflow_ignore_cancelled_deps"
+
+	// MetadataKeyWorkflowIgnoreDeletedDeps mirrors the above for deleted deps.
+	MetadataKeyWorkflowIgnoreDeletedDeps = "river:workflow_ignore_deleted_deps"
+
+	// MetadataKeyWorkflowIgnoreDiscardedDeps mirrors the above for discarded deps.
+	MetadataKeyWorkflowIgnoreDiscardedDeps = "river:workflow_ignore_discarded_deps"
+
+	// MetadataKeyWorkflowName is an optional human-readable workflow label.
+	MetadataKeyWorkflowName = "river:workflow_name"
+
+	// MetadataKeyWorkflowTask is the unique-within-workflow task name.
+	MetadataKeyWorkflowTask = "river:workflow_task"
 )
 
 type ContextKeyClient struct{}
