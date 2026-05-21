@@ -969,8 +969,10 @@ func MigrationLineMainTruncateTables(version int) []string {
 		return []string{"river_job", "river_leader"}
 	case 4:
 		return []string{"river_job", "river_leader", "river_queue"}
-	case 0, 5, 6:
+	case 5, 6, 7:
 		return []string{"river_job", "river_leader", "river_queue", "river_client", "river_client_queue"}
+	case 0, 8:
+		return []string{"river_job", "river_leader", "river_queue", "river_client", "river_client_queue", "river_periodic_job"}
 	}
 
 	panic(fmt.Sprintf("unrecognized migration version: %d", version))
