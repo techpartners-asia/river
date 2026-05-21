@@ -905,6 +905,18 @@ func (e *Executor) JobRetry(ctx context.Context, params *riverdriver.JobRetryPar
 	})
 }
 
+func (e *Executor) JobRetryWorkflow(ctx context.Context, params *riverdriver.JobRetryWorkflowParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobRetryWorkflow(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobRetryWorkflowParams{
+		ResetHistory: params.ResetHistory,
+		TargetStates: workflowRetryStates(params.Mode),
+		WorkflowID:   params.WorkflowID,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
 func (e *Executor) JobSchedule(ctx context.Context, params *riverdriver.JobScheduleParams) ([]*riverdriver.JobScheduleResult, error) {
 	// This operation diverges the most from the Postgres version out of all the
 	// others by far. The Postgres version is one gigantic query that can't
@@ -1765,6 +1777,17 @@ func migrationFromInternal(internal *dbsqlc.RiverMigration) *riverdriver.Migrati
 		CreatedAt: internal.CreatedAt.UTC(),
 		Line:      internal.Line,
 		Version:   int(internal.Version),
+	}
+}
+
+func workflowRetryStates(mode string) []string {
+	switch mode {
+	case "failed_only":
+		return []string{"discarded"}
+	case "all":
+		return []string{"cancelled", "completed", "discarded"}
+	default: // "failed_and_downstream"
+		return []string{"cancelled", "discarded"}
 	}
 }
 

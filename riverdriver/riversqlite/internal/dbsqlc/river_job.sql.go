@@ -1384,6 +1384,84 @@ func (q *Queries) JobRetry(ctx context.Context, db DBTX, arg *JobRetryParams) (*
 	return &i, err
 }
 
+const jobRetryWorkflow = `-- name: JobRetryWorkflow :many
+UPDATE /* TEMPLATE: schema */river_job
+SET state = CASE
+        WHEN json_array_length(coalesce(json_extract(metadata, '$."river:workflow_deps"'), json('[]'))) > 0
+        THEN 'pending'
+        ELSE 'available'
+    END,
+    finalized_at = NULL,
+    attempt = 0,
+    attempted_at = NULL,
+    attempted_by = NULL,
+    errors = CASE WHEN cast(?1 AS boolean) THEN json('[]') ELSE errors END,
+    metadata = json_remove(metadata, '$.cancel_attempted_at', '$."river:workflow_cancel_reason"')
+WHERE json_extract(metadata, '$."river:workflow_id"') = cast(?2 AS text)
+  AND state IN (/*SLICE:target_states*/?)
+RETURNING id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+`
+
+type JobRetryWorkflowParams struct {
+	ResetHistory bool
+	WorkflowID   string
+	TargetStates []string
+}
+
+func (q *Queries) JobRetryWorkflow(ctx context.Context, db DBTX, arg *JobRetryWorkflowParams) ([]*RiverJob, error) {
+	query := jobRetryWorkflow
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ResetHistory)
+	queryParams = append(queryParams, arg.WorkflowID)
+	if len(arg.TargetStates) > 0 {
+		for _, v := range arg.TargetStates {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:target_states*/?", strings.Repeat(",?", len(arg.TargetStates))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:target_states*/?", "NULL", 1)
+	}
+	rows, err := db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*RiverJob
+	for rows.Next() {
+		var i RiverJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.Args,
+			&i.Attempt,
+			&i.AttemptedAt,
+			&i.AttemptedBy,
+			&i.CreatedAt,
+			&i.Errors,
+			&i.FinalizedAt,
+			&i.Kind,
+			&i.MaxAttempts,
+			&i.Metadata,
+			&i.Priority,
+			&i.Queue,
+			&i.State,
+			&i.ScheduledAt,
+			&i.Tags,
+			&i.UniqueKey,
+			&i.UniqueStates,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const jobScheduleGetCollision = `-- name: JobScheduleGetCollision :one
 SELECT id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
 FROM /* TEMPLATE: schema */river_job

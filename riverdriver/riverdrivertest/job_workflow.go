@@ -129,6 +129,70 @@ func exerciseJobCancelWorkflow[TTx any](ctx context.Context, t *testing.T, execu
 	})
 }
 
+func exerciseJobRetryWorkflow[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
+	t.Helper()
+
+	setup := func(ctx context.Context, t *testing.T) riverdriver.Executor {
+		t.Helper()
+		exec, _ := executorWithTx(ctx, t)
+		return exec
+	}
+
+	t.Run("JobRetryWorkflow", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("FailedAndDownstream_ResetsCancelledAndDiscarded", func(t *testing.T) {
+			t.Parallel()
+			exec := setup(ctx, t)
+			wfID := "wf-retry-fad"
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: wfID, TaskName: "a", State: rivertype.JobStateDiscarded})
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: wfID, TaskName: "b", Deps: []string{"a"}, State: rivertype.JobStateCancelled})
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: wfID, TaskName: "c", State: rivertype.JobStateCompleted})
+
+			rows, err := exec.JobRetryWorkflow(ctx, &riverdriver.JobRetryWorkflowParams{
+				Mode: "failed_and_downstream", Now: time.Now(), WorkflowID: wfID,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 2) // a and b
+			for _, r := range rows {
+				require.NotEqual(t, rivertype.JobStateCancelled, r.State)
+				require.NotEqual(t, rivertype.JobStateDiscarded, r.State)
+				require.Nil(t, r.FinalizedAt)
+				require.Equal(t, 0, r.Attempt)
+			}
+		})
+
+		t.Run("FailedOnly_ResetsOnlyDiscarded", func(t *testing.T) {
+			t.Parallel()
+			exec := setup(ctx, t)
+			wfID := "wf-retry-fo"
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: wfID, TaskName: "a", State: rivertype.JobStateDiscarded})
+			cancelled := insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: wfID, TaskName: "b", Deps: []string{"a"}, State: rivertype.JobStateCancelled})
+
+			rows, err := exec.JobRetryWorkflow(ctx, &riverdriver.JobRetryWorkflowParams{
+				Mode: "failed_only", Now: time.Now(), WorkflowID: wfID,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			require.NotEqual(t, cancelled.ID, rows[0].ID)
+		})
+
+		t.Run("All_ResetsEvenCompleted", func(t *testing.T) {
+			t.Parallel()
+			exec := setup(ctx, t)
+			wfID := "wf-retry-all"
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: wfID, TaskName: "a", State: rivertype.JobStateCompleted})
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: wfID, TaskName: "b", Deps: []string{"a"}, State: rivertype.JobStateCompleted})
+
+			rows, err := exec.JobRetryWorkflow(ctx, &riverdriver.JobRetryWorkflowParams{
+				Mode: "all", Now: time.Now(), WorkflowID: wfID,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 2)
+		})
+	})
+}
+
 func exerciseJobGetWorkflowTasks[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
 	t.Helper()
 

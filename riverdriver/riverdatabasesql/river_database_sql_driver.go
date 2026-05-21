@@ -627,6 +627,18 @@ func (e *Executor) JobRetry(ctx context.Context, params *riverdriver.JobRetryPar
 	return jobRowFromInternal(job)
 }
 
+func (e *Executor) JobRetryWorkflow(ctx context.Context, params *riverdriver.JobRetryWorkflowParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobRetryWorkflow(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobRetryWorkflowParams{
+		ResetHistory: params.ResetHistory,
+		TargetStates: workflowRetryStates(params.Mode),
+		WorkflowID:   params.WorkflowID,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
 func (e *Executor) JobSchedule(ctx context.Context, params *riverdriver.JobScheduleParams) ([]*riverdriver.JobScheduleResult, error) {
 	scheduleResults, err := dbsqlc.New().JobSchedule(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobScheduleParams{
 		Max: int64(params.Max),
@@ -1299,4 +1311,15 @@ func schemaTemplateParam(ctx context.Context, schema string) context.Context {
 	return sqlctemplate.WithReplacements(ctx, map[string]sqlctemplate.Replacement{
 		"schema": {Value: schema, Stable: true},
 	}, nil)
+}
+
+func workflowRetryStates(mode string) []string {
+	switch mode {
+	case "failed_only":
+		return []string{"discarded"}
+	case "all":
+		return []string{"cancelled", "completed", "discarded"}
+	default: // "failed_and_downstream"
+		return []string{"cancelled", "discarded"}
+	}
 }

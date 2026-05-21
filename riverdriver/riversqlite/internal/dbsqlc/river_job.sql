@@ -606,3 +606,20 @@ SELECT *
 FROM /* TEMPLATE: schema */river_job
 WHERE json_extract(metadata, '$."river:workflow_id"') = cast(@workflow_id AS text)
 ORDER BY id;
+
+-- name: JobRetryWorkflow :many
+UPDATE /* TEMPLATE: schema */river_job
+SET state = CASE
+        WHEN json_array_length(coalesce(json_extract(metadata, '$."river:workflow_deps"'), json('[]'))) > 0
+        THEN 'pending'
+        ELSE 'available'
+    END,
+    finalized_at = NULL,
+    attempt = 0,
+    attempted_at = NULL,
+    attempted_by = NULL,
+    errors = CASE WHEN cast(@reset_history AS boolean) THEN json('[]') ELSE errors END,
+    metadata = json_remove(metadata, '$.cancel_attempted_at', '$."river:workflow_cancel_reason"')
+WHERE json_extract(metadata, '$."river:workflow_id"') = cast(@workflow_id AS text)
+  AND state IN (sqlc.slice('target_states'))
+RETURNING *;

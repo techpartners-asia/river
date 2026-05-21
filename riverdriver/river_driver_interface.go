@@ -222,6 +222,7 @@ type Executor interface {
 	JobList(ctx context.Context, params *JobListParams) ([]*rivertype.JobRow, error)
 	JobRescueMany(ctx context.Context, params *JobRescueManyParams) (*struct{}, error)
 	JobRetry(ctx context.Context, params *JobRetryParams) (*rivertype.JobRow, error)
+	JobRetryWorkflow(ctx context.Context, params *JobRetryWorkflowParams) ([]*rivertype.JobRow, error)
 	JobSchedule(ctx context.Context, params *JobScheduleParams) ([]*JobScheduleResult, error)
 	JobSetStateIfRunningMany(ctx context.Context, params *JobSetStateIfRunningManyParams) ([]*rivertype.JobRow, error)
 	JobUpdate(ctx context.Context, params *JobUpdateParams) (*rivertype.JobRow, error)
@@ -693,6 +694,14 @@ type JobUpdateFullParams struct {
 
 // JobUpdateWorkflowReadyParams are parameters for transitioning workflow tasks
 // from pending to available when all of their dependencies have been satisfied.
+type JobRetryWorkflowParams struct {
+	Mode         string // "all" | "failed_and_downstream" | "failed_only"
+	Now          time.Time
+	ResetHistory bool
+	Schema       string
+	WorkflowID   string
+}
+
 type JobUpdateWorkflowReadyParams struct {
 	Schema string
 	Max    int

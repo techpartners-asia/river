@@ -1436,6 +1436,71 @@ func (q *Queries) JobRetry(ctx context.Context, db DBTX, arg *JobRetryParams) (*
 	return &i, err
 }
 
+const jobRetryWorkflow = `-- name: JobRetryWorkflow :many
+UPDATE /* TEMPLATE: schema */river_job
+SET state = CASE
+        WHEN jsonb_array_length(coalesce(metadata->'river:workflow_deps', '[]'::jsonb)) > 0
+        THEN 'pending'::/* TEMPLATE: schema */river_job_state
+        ELSE 'available'::/* TEMPLATE: schema */river_job_state
+    END,
+    finalized_at = NULL,
+    attempt = 0,
+    attempted_at = NULL,
+    attempted_by = NULL,
+    errors = CASE WHEN $1::bool THEN ARRAY[]::jsonb[] ELSE errors END,
+    metadata = (metadata - 'cancel_attempted_at') - 'river:workflow_cancel_reason'
+WHERE metadata->>'river:workflow_id' = $2::text
+  -- Cast state to text to avoid needing the OID of the river_job_state[] enum
+  -- array type registered (mirroring the pattern in JobSetStateIfRunningMany).
+  AND state::text = ANY($3::text[])
+RETURNING id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+`
+
+type JobRetryWorkflowParams struct {
+	ResetHistory bool
+	WorkflowID   string
+	TargetStates []string
+}
+
+func (q *Queries) JobRetryWorkflow(ctx context.Context, db DBTX, arg *JobRetryWorkflowParams) ([]*RiverJob, error) {
+	rows, err := db.Query(ctx, jobRetryWorkflow, arg.ResetHistory, arg.WorkflowID, arg.TargetStates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*RiverJob
+	for rows.Next() {
+		var i RiverJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.Args,
+			&i.Attempt,
+			&i.AttemptedAt,
+			&i.AttemptedBy,
+			&i.CreatedAt,
+			&i.Errors,
+			&i.FinalizedAt,
+			&i.Kind,
+			&i.MaxAttempts,
+			&i.Metadata,
+			&i.Priority,
+			&i.Queue,
+			&i.State,
+			&i.ScheduledAt,
+			&i.Tags,
+			&i.UniqueKey,
+			&i.UniqueStates,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const jobSchedule = `-- name: JobSchedule :many
 WITH jobs_to_schedule AS (
     SELECT

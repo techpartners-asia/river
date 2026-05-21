@@ -113,6 +113,41 @@ func (c *Client[TTx]) cancelOn(ctx context.Context, exec riverdriver.Executor, w
 	return &WorkflowCancelResult{CancelledJobs: rows}, nil
 }
 
+// WorkflowRetryResult is returned by [Client.WorkflowRetry] and
+// [Client.WorkflowRetryTx].
+type WorkflowRetryResult struct {
+	RetriedJobs []*rivertype.JobRow
+}
+
+// WorkflowRetry retries workflow tasks according to the given mode:
+//   - "failed_only": resets only discarded tasks
+//   - "failed_and_downstream": resets discarded and cancelled tasks
+//   - "all": resets cancelled, completed, and discarded tasks
+//
+// If resetHistory is true, the error history on each reset task is cleared.
+func (c *Client[TTx]) WorkflowRetry(ctx context.Context, workflowID, mode string, resetHistory bool) (*WorkflowRetryResult, error) {
+	return c.retryOn(ctx, c.driver.GetExecutor(), workflowID, mode, resetHistory)
+}
+
+// WorkflowRetryTx is the transactional variant of [Client.WorkflowRetry].
+func (c *Client[TTx]) WorkflowRetryTx(ctx context.Context, tx TTx, workflowID, mode string, resetHistory bool) (*WorkflowRetryResult, error) {
+	return c.retryOn(ctx, c.driver.UnwrapExecutor(tx), workflowID, mode, resetHistory)
+}
+
+func (c *Client[TTx]) retryOn(ctx context.Context, exec riverdriver.Executor, workflowID, mode string, resetHistory bool) (*WorkflowRetryResult, error) {
+	rows, err := exec.JobRetryWorkflow(ctx, &riverdriver.JobRetryWorkflowParams{
+		Mode:         mode,
+		Now:          time.Now(),
+		ResetHistory: resetHistory,
+		Schema:       c.config.Schema,
+		WorkflowID:   workflowID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &WorkflowRetryResult{RetriedJobs: rows}, nil
+}
+
 func workflowIDFromMetadata(metadata []byte) (string, error) {
 	var meta map[string]json.RawMessage
 	if err := json.Unmarshal(metadata, &meta); err != nil {

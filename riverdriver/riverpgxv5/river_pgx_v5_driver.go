@@ -621,6 +621,18 @@ func (e *Executor) JobRetry(ctx context.Context, params *riverdriver.JobRetryPar
 	return jobRowFromInternal(job)
 }
 
+func (e *Executor) JobRetryWorkflow(ctx context.Context, params *riverdriver.JobRetryWorkflowParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobRetryWorkflow(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobRetryWorkflowParams{
+		ResetHistory: params.ResetHistory,
+		TargetStates: workflowRetryStates(params.Mode),
+		WorkflowID:   params.WorkflowID,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
 func (e *Executor) JobSchedule(ctx context.Context, params *riverdriver.JobScheduleParams) ([]*riverdriver.JobScheduleResult, error) {
 	scheduleResults, err := dbsqlc.New().JobSchedule(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobScheduleParams{
 		Max: int64(params.Max),
@@ -1343,6 +1355,17 @@ func queueFromInternal(internal *dbsqlc.RiverQueue) *rivertype.Queue {
 // If we end up eliminating the use of copyfrom functions (which can't use
 // sqlctemplate because no SQL is executed at any time so there's nowhere to
 // otherwise do a replacement), we can get rid of this completely.
+func workflowRetryStates(mode string) []string {
+	switch mode {
+	case "failed_only":
+		return []string{"discarded"}
+	case "all":
+		return []string{"cancelled", "completed", "discarded"}
+	default: // "failed_and_downstream"
+		return []string{"cancelled", "discarded"}
+	}
+}
+
 type schemaCopyFromContextKey struct{}
 
 func schemaCopyFrom(ctx context.Context, schema string) context.Context {

@@ -838,3 +838,22 @@ FROM classified c
 WHERE j.id = c.id
   AND c.new_state <> 'pending'
 RETURNING j.*;
+
+-- name: JobRetryWorkflow :many
+UPDATE /* TEMPLATE: schema */river_job
+SET state = CASE
+        WHEN jsonb_array_length(coalesce(metadata->'river:workflow_deps', '[]'::jsonb)) > 0
+        THEN 'pending'::/* TEMPLATE: schema */river_job_state
+        ELSE 'available'::/* TEMPLATE: schema */river_job_state
+    END,
+    finalized_at = NULL,
+    attempt = 0,
+    attempted_at = NULL,
+    attempted_by = NULL,
+    errors = CASE WHEN @reset_history::bool THEN ARRAY[]::jsonb[] ELSE errors END,
+    metadata = (metadata - 'cancel_attempted_at') - 'river:workflow_cancel_reason'
+WHERE metadata->>'river:workflow_id' = @workflow_id::text
+  -- Cast state to text to avoid needing the OID of the river_job_state[] enum
+  -- array type registered (mirroring the pattern in JobSetStateIfRunningMany).
+  AND state::text = ANY(@target_states::text[])
+RETURNING *;

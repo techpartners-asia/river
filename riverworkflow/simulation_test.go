@@ -249,6 +249,53 @@ func TestSimulation_Stress(t *testing.T) {
 	}
 }
 
+// TestClient_WorkflowRetry verifies that WorkflowRetry resets tasks according
+// to the given mode. Because the workflow client inserts tasks as available or
+// pending (not discarded/cancelled), this test mainly checks that the method
+// is callable and returns without error; the per-mode state semantics are
+// fully covered by the driver conformance suite in riverdrivertest.
+func TestClient_WorkflowRetry(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
+	require.NoError(t, err)
+	defer dbPool.Close()
+
+	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &recordingWorker{mu: &sync.Mutex{}, dur: 0})
+
+	client, err := riverworkflow.NewClient(riverpgxv5.New(dbPool), &riverworkflow.Config{
+		Config: river.Config{
+			Workers: workers,
+			Schema:  schema,
+		},
+	})
+	require.NoError(t, err)
+
+	// Insert a small workflow: a -> b -> c.
+	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{Name: "retry-unit"})
+	wf.Add("a", recordingWorkerArgs{Task: "a"}, nil, nil)
+	wf.Add("b", recordingWorkerArgs{Task: "b"}, nil, &riverworkflow.WorkflowTaskOpts{Deps: []string{"a"}})
+	wf.Add("c", recordingWorkerArgs{Task: "c"}, nil, &riverworkflow.WorkflowTaskOpts{Deps: []string{"b"}})
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	_, err = client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+
+	// Freshly-inserted tasks have state available or pending — none are
+	// discarded/cancelled/completed — so all retry modes return zero rows.
+	for _, mode := range []string{"failed_only", "failed_and_downstream", "all"} {
+		res, err := client.WorkflowRetry(ctx, prep.WorkflowID, mode, false)
+		require.NoError(t, err)
+		require.Empty(t, res.RetriedJobs, "mode=%s: freshly inserted tasks should not match target states", mode)
+	}
+}
+
 // TestSimulation_CancelCascades verifies that cancelling a workflow cancels
 // every non-finalized task while leaving completed tasks alone.
 func TestSimulation_CancelCascades(t *testing.T) {
