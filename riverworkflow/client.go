@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/internal/notifier"
 	"github.com/riverqueue/river/internal/rivercommon"
 	"github.com/riverqueue/river/riverdriver"
 	"github.com/riverqueue/river/rivertype"
@@ -97,11 +98,14 @@ func (c *Client[TTx]) WorkflowCancelTx(ctx context.Context, tx TTx, workflowID s
 }
 
 func (c *Client[TTx]) cancelOn(ctx context.Context, exec riverdriver.Executor, workflowID string) (*WorkflowCancelResult, error) {
+	now := time.Now()
 	rows, err := exec.JobCancelWorkflow(ctx, &riverdriver.JobCancelWorkflowParams{
-		Now:        time.Now(),
-		Reason:     "workflow cancelled by client",
-		Schema:     c.config.Schema,
-		WorkflowID: workflowID,
+		CancelAttemptedAt: now,
+		ControlTopic:      string(notifier.NotificationTopicControl),
+		Now:               now,
+		Reason:            "workflow cancelled by client",
+		Schema:            c.config.Schema,
+		WorkflowID:        workflowID,
 	})
 	if err != nil {
 		return nil, err

@@ -354,8 +354,12 @@ type JobCancelParams struct {
 }
 
 // JobCancelWorkflowParams are parameters for canceling every non-finalized
-// task in a workflow identified by WorkflowID.
+// task in a workflow identified by WorkflowID. Running tasks are not
+// finalized directly; they are marked with `metadata.cancel_attempted_at`
+// and a notification on ControlTopic so the producer can cancel via context.
 type JobCancelWorkflowParams struct {
+	CancelAttemptedAt time.Time
+	ControlTopic      string
 	Schema     string
 	WorkflowID string
 	Now        time.Time

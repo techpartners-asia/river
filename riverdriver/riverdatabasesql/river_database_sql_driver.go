@@ -208,10 +208,18 @@ func (e *Executor) JobCancel(ctx context.Context, params *riverdriver.JobCancelP
 }
 
 func (e *Executor) JobCancelWorkflow(ctx context.Context, params *riverdriver.JobCancelWorkflowParams) ([]*rivertype.JobRow, error) {
+	cancelledAt, err := params.CancelAttemptedAt.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	schemaParam := sql.NullString{String: params.Schema, Valid: params.Schema != ""}
 	jobs, err := dbsqlc.New().JobCancelWorkflow(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobCancelWorkflowParams{
-		Now:        params.Now,
-		Reason:     params.Reason,
-		WorkflowID: params.WorkflowID,
+		CancelAttemptedAt: string(cancelledAt),
+		ControlTopic:      params.ControlTopic,
+		Now:               params.Now,
+		Reason:            params.Reason,
+		Schema:            schemaParam,
+		WorkflowID:        params.WorkflowID,
 	})
 	if err != nil {
 		return nil, interpretError(err)

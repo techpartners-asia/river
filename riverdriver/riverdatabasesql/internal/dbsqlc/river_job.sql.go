@@ -98,28 +98,59 @@ func (q *Queries) JobCancel(ctx context.Context, db DBTX, arg *JobCancelParams) 
 }
 
 const jobCancelWorkflow = `-- name: JobCancelWorkflow :many
+WITH locked AS (
+  SELECT id, queue, state
+  FROM /* TEMPLATE: schema */river_job
+  WHERE metadata->>'river:workflow_id' = $4::text
+    AND finalized_at IS NULL
+  FOR UPDATE
+),
+notifications AS (
+  SELECT pg_notify(
+    concat(coalesce($5::text, current_schema()), '.', $6::text),
+    json_build_object('action', 'cancel', 'job_id', id, 'queue', queue)::text
+  ) AS notified
+  FROM locked
+  WHERE state = 'running'
+)
 UPDATE /* TEMPLATE: schema */river_job
-SET state        = 'cancelled',
-    finalized_at = $1::timestamptz,
-    errors       = errors || ARRAY[jsonb_build_object(
-      'at',      $1::timestamptz,
-      'attempt', attempt,
-      'error',   $2::text,
-      'trace',   ''
-    )]::jsonb[]
-WHERE metadata->>'river:workflow_id' = $3::text
-  AND finalized_at IS NULL
-RETURNING id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+SET
+  -- Leave running tasks running so their executor can cancel cleanly via
+  -- the worker's context. The cancel_attempted_at metadata key tells the
+  -- rescuer not to rescue them.
+  state = CASE WHEN river_job.state = 'running' THEN river_job.state ELSE 'cancelled' END,
+  finalized_at = CASE WHEN river_job.state = 'running' THEN river_job.finalized_at ELSE $1::timestamptz END,
+  metadata = jsonb_set(
+    jsonb_set(metadata, '{cancel_attempted_at}'::text[], $2::jsonb, true),
+    '{river:workflow_cancel_reason}'::text[],
+    to_jsonb($3::text),
+    true
+  )
+FROM locked
+WHERE river_job.id = locked.id
+  -- Force notifications CTE to materialize so pg_notify runs.
+  AND (SELECT count(*) FROM notifications) >= 0
+RETURNING river_job.id, river_job.args, river_job.attempt, river_job.attempted_at, river_job.attempted_by, river_job.created_at, river_job.errors, river_job.finalized_at, river_job.kind, river_job.max_attempts, river_job.metadata, river_job.priority, river_job.queue, river_job.state, river_job.scheduled_at, river_job.tags, river_job.unique_key, river_job.unique_states
 `
 
 type JobCancelWorkflowParams struct {
-	Now        time.Time
-	Reason     string
-	WorkflowID string
+	Now               time.Time
+	CancelAttemptedAt string
+	Reason            string
+	WorkflowID        string
+	Schema            sql.NullString
+	ControlTopic      string
 }
 
 func (q *Queries) JobCancelWorkflow(ctx context.Context, db DBTX, arg *JobCancelWorkflowParams) ([]*RiverJob, error) {
-	rows, err := db.QueryContext(ctx, jobCancelWorkflow, arg.Now, arg.Reason, arg.WorkflowID)
+	rows, err := db.QueryContext(ctx, jobCancelWorkflow,
+		arg.Now,
+		arg.CancelAttemptedAt,
+		arg.Reason,
+		arg.WorkflowID,
+		arg.Schema,
+		arg.ControlTopic,
+	)
 	if err != nil {
 		return nil, err
 	}

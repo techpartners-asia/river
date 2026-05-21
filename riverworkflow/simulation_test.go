@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -159,6 +160,92 @@ func TestSimulation_FanOutFanIn(t *testing.T) {
 		var meta map[string]any
 		require.NoError(t, json.Unmarshal(row.Metadata, &meta))
 		require.Equal(t, wf.ID(), meta[rivercommon.MetadataKeyWorkflowID])
+	}
+}
+
+// TestSimulation_Stress fires a wide DAG (20 fan-out children of a single
+// root, joined by one tail) and asserts all 22 tasks complete in dependency
+// order. Catches races between the scheduler and the worker pool.
+func TestSimulation_Stress(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
+	require.NoError(t, err)
+	defer dbPool.Close()
+
+	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+
+	w := &recordingWorker{mu: &sync.Mutex{}, dur: 0}
+	workers := river.NewWorkers()
+	river.AddWorker(workers, w)
+
+	client, err := riverworkflow.NewClient(riverpgxv5.New(dbPool), &riverworkflow.Config{
+		Config: river.Config{
+			Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 16}},
+			Schema:  schema,
+			Workers: workers,
+		},
+		WorkflowScheduler: riverworkflow.WorkflowSchedulerConfig{
+			Interval: 50 * time.Millisecond,
+		},
+	})
+	require.NoError(t, err)
+
+	subscribeChan, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	const fanout = 20
+	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{Name: "stress"})
+	wf.Add("root", recordingWorkerArgs{Task: "root"}, nil, nil)
+	tailDeps := make([]string, fanout)
+	for i := 0; i < fanout; i++ {
+		name := "child-" + strconv.Itoa(i)
+		wf.Add(name, recordingWorkerArgs{Task: name}, nil, &riverworkflow.WorkflowTaskOpts{Deps: []string{"root"}})
+		tailDeps[i] = name
+	}
+	wf.Add("tail", recordingWorkerArgs{Task: "tail"}, nil, &riverworkflow.WorkflowTaskOpts{Deps: tailDeps})
+
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	_, err = client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+
+	require.NoError(t, client.Start(ctx))
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		require.NoError(t, client.Stop(stopCtx))
+	}()
+
+	total := fanout + 2 // root + children + tail
+	timeout := time.After(45 * time.Second)
+	for completed := 0; completed < total; {
+		select {
+		case <-subscribeChan:
+			completed++
+		case <-timeout:
+			t.Fatalf("timed out waiting for %d completions; got %d", total, completed)
+		}
+	}
+
+	w.mu.Lock()
+	got := append([]string(nil), w.done...)
+	w.mu.Unlock()
+	require.Len(t, got, total)
+
+	pos := map[string]int{}
+	for i, name := range got {
+		pos[name] = i
+	}
+	require.Equal(t, 0, pos["root"], "root must complete first; order=%v", got)
+	require.Equal(t, total-1, pos["tail"], "tail must complete last; order=%v", got)
+	for i := 0; i < fanout; i++ {
+		name := "child-" + strconv.Itoa(i)
+		require.Less(t, pos["root"], pos[name], "root must finish before %s", name)
+		require.Less(t, pos[name], pos["tail"], "%s must finish before tail", name)
 	}
 }
 

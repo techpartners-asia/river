@@ -515,11 +515,19 @@ SET
 WHERE id = @id
 RETURNING *;
 
+-- Cancels every non-finalized task in a workflow. Running tasks keep their
+-- 'running' state and are marked with metadata.cancel_attempted_at so the
+-- worker can cancel them via context; other states finalize immediately.
 -- name: JobCancelWorkflow :many
 UPDATE /* TEMPLATE: schema */river_job
-SET state        = 'cancelled',
-    finalized_at = cast(@now AS text),
-    metadata     = json_set(metadata, '$."river:workflow_cancel_reason"', cast(@reason AS text))
+SET
+    state        = CASE WHEN state = 'running' THEN state ELSE 'cancelled' END,
+    finalized_at = CASE WHEN state = 'running' THEN finalized_at ELSE cast(@now AS text) END,
+    metadata     = json_set(
+                     json_set(metadata, '$.cancel_attempted_at', cast(@cancel_attempted_at AS text)),
+                     '$."river:workflow_cancel_reason"',
+                     cast(@reason AS text)
+                   )
 WHERE json_extract(metadata, '$."river:workflow_id"') = cast(@workflow_id AS text)
   AND finalized_at IS NULL
 RETURNING *;

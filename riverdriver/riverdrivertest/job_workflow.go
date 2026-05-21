@@ -81,18 +81,50 @@ func exerciseJobCancelWorkflow[TTx any](ctx context.Context, t *testing.T, execu
 			pending := insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: workflowID, TaskName: "b", State: rivertype.JobStatePending, Deps: []string{"a"}})
 
 			cancelled, err := exec.JobCancelWorkflow(ctx, &riverdriver.JobCancelWorkflowParams{
-				WorkflowID: workflowID,
-				Now:        time.Now(),
-				Reason:     "user requested",
+				CancelAttemptedAt: time.Now(),
+				ControlTopic:      "river_control",
+				Now:               time.Now(),
+				Reason:            "user requested",
+				WorkflowID:        workflowID,
 			})
 			require.NoError(t, err)
 			require.Len(t, cancelled, 1)
 			require.Equal(t, pending.ID, cancelled[0].ID)
 			require.Equal(t, rivertype.JobStateCancelled, cancelled[0].State)
+			require.NotNil(t, cancelled[0].FinalizedAt)
 
 			row, err := exec.JobGetByID(ctx, &riverdriver.JobGetByIDParams{ID: completed.ID})
 			require.NoError(t, err)
 			require.Equal(t, rivertype.JobStateCompleted, row.State)
+		})
+
+		t.Run("LeavesRunningTasksRunning", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+
+			workflowID := "wf-cancel-running"
+			running := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "a",
+				State:      rivertype.JobStateRunning,
+			})
+
+			cancelled, err := exec.JobCancelWorkflow(ctx, &riverdriver.JobCancelWorkflowParams{
+				CancelAttemptedAt: time.Now(),
+				ControlTopic:      "river_control",
+				Now:               time.Now(),
+				Reason:            "abort",
+				WorkflowID:        workflowID,
+			})
+			require.NoError(t, err)
+			require.Len(t, cancelled, 1)
+			require.Equal(t, running.ID, cancelled[0].ID)
+			require.Equal(t, rivertype.JobStateRunning, cancelled[0].State, "running tasks must stay running so the worker context can cancel")
+
+			var meta map[string]any
+			require.NoError(t, json.Unmarshal(cancelled[0].Metadata, &meta))
+			require.Contains(t, meta, "cancel_attempted_at", "running task must carry cancel_attempted_at so the rescuer doesn't rescue it")
 		})
 	})
 }

@@ -739,18 +739,39 @@ WHERE metadata->>'river:workflow_id' = @workflow_id::text
 ORDER BY id;
 
 -- name: JobCancelWorkflow :many
+WITH locked AS (
+  SELECT id, queue, state
+  FROM /* TEMPLATE: schema */river_job
+  WHERE metadata->>'river:workflow_id' = @workflow_id::text
+    AND finalized_at IS NULL
+  FOR UPDATE
+),
+notifications AS (
+  SELECT pg_notify(
+    concat(coalesce(sqlc.narg('schema')::text, current_schema()), '.', @control_topic::text),
+    json_build_object('action', 'cancel', 'job_id', id, 'queue', queue)::text
+  ) AS notified
+  FROM locked
+  WHERE state = 'running'
+)
 UPDATE /* TEMPLATE: schema */river_job
-SET state        = 'cancelled',
-    finalized_at = @now::timestamptz,
-    errors       = errors || ARRAY[jsonb_build_object(
-      'at',      @now::timestamptz,
-      'attempt', attempt,
-      'error',   @reason::text,
-      'trace',   ''
-    )]::jsonb[]
-WHERE metadata->>'river:workflow_id' = @workflow_id::text
-  AND finalized_at IS NULL
-RETURNING *;
+SET
+  -- Leave running tasks running so their executor can cancel cleanly via
+  -- the worker's context. The cancel_attempted_at metadata key tells the
+  -- rescuer not to rescue them.
+  state = CASE WHEN river_job.state = 'running' THEN river_job.state ELSE 'cancelled' END,
+  finalized_at = CASE WHEN river_job.state = 'running' THEN river_job.finalized_at ELSE @now::timestamptz END,
+  metadata = jsonb_set(
+    jsonb_set(metadata, '{cancel_attempted_at}'::text[], @cancel_attempted_at::jsonb, true),
+    '{river:workflow_cancel_reason}'::text[],
+    to_jsonb(@reason::text),
+    true
+  )
+FROM locked
+WHERE river_job.id = locked.id
+  -- Force notifications CTE to materialize so pg_notify runs.
+  AND (SELECT count(*) FROM notifications) >= 0
+RETURNING river_job.*;
 
 -- name: JobUpdateWorkflowReady :many
 WITH candidates AS (

@@ -114,22 +114,36 @@ func (q *Queries) JobCancel(ctx context.Context, db DBTX, arg *JobCancelParams) 
 
 const jobCancelWorkflow = `-- name: JobCancelWorkflow :many
 UPDATE /* TEMPLATE: schema */river_job
-SET state        = 'cancelled',
-    finalized_at = cast(?1 AS text),
-    metadata     = json_set(metadata, '$."river:workflow_cancel_reason"', cast(?2 AS text))
-WHERE json_extract(metadata, '$."river:workflow_id"') = cast(?3 AS text)
+SET
+    state        = CASE WHEN state = 'running' THEN state ELSE 'cancelled' END,
+    finalized_at = CASE WHEN state = 'running' THEN finalized_at ELSE cast(?1 AS text) END,
+    metadata     = json_set(
+                     json_set(metadata, '$.cancel_attempted_at', cast(?2 AS text)),
+                     '$."river:workflow_cancel_reason"',
+                     cast(?3 AS text)
+                   )
+WHERE json_extract(metadata, '$."river:workflow_id"') = cast(?4 AS text)
   AND finalized_at IS NULL
 RETURNING id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
 `
 
 type JobCancelWorkflowParams struct {
-	Now        string
-	Reason     string
-	WorkflowID string
+	Now               string
+	CancelAttemptedAt string
+	Reason            string
+	WorkflowID        string
 }
 
+// Cancels every non-finalized task in a workflow. Running tasks keep their
+// 'running' state and are marked with metadata.cancel_attempted_at so the
+// worker can cancel them via context; other states finalize immediately.
 func (q *Queries) JobCancelWorkflow(ctx context.Context, db DBTX, arg *JobCancelWorkflowParams) ([]*RiverJob, error) {
-	rows, err := db.QueryContext(ctx, jobCancelWorkflow, arg.Now, arg.Reason, arg.WorkflowID)
+	rows, err := db.QueryContext(ctx, jobCancelWorkflow,
+		arg.Now,
+		arg.CancelAttemptedAt,
+		arg.Reason,
+		arg.WorkflowID,
+	)
 	if err != nil {
 		return nil, err
 	}
