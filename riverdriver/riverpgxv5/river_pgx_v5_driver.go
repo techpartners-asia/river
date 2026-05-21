@@ -215,6 +215,10 @@ func (e *Executor) JobCancel(ctx context.Context, params *riverdriver.JobCancelP
 	return jobRowFromInternal(job)
 }
 
+func (e *Executor) JobCancelWorkflow(ctx context.Context, params *riverdriver.JobCancelWorkflowParams) ([]*rivertype.JobRow, error) {
+	return nil, riverdriver.ErrNotImplemented
+}
+
 func (e *Executor) JobCountByAllStates(ctx context.Context, params *riverdriver.JobCountByAllStatesParams) (map[rivertype.JobState]int, error) {
 	counts, err := dbsqlc.New().JobCountByAllStates(schemaTemplateParam(ctx, params.Schema), e.dbtx)
 	if err != nil {
@@ -343,6 +347,10 @@ func (e *Executor) JobGetStuck(ctx context.Context, params *riverdriver.JobGetSt
 		return nil, interpretError(err)
 	}
 	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
+func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.JobGetWorkflowTasksParams) ([]*rivertype.JobRow, error) {
+	return nil, riverdriver.ErrNotImplemented
 }
 
 func (e *Executor) JobInsertFastMany(ctx context.Context, params *riverdriver.JobInsertFastManyParams) ([]*riverdriver.JobInsertFastResult, error) {
@@ -699,6 +707,10 @@ func (e *Executor) JobUpdateFull(ctx context.Context, params *riverdriver.JobUpd
 	}
 
 	return jobRowFromInternal(job)
+}
+
+func (e *Executor) JobUpdateWorkflowReady(ctx context.Context, params *riverdriver.JobUpdateWorkflowReadyParams) ([]*rivertype.JobRow, error) {
+	return nil, riverdriver.ErrNotImplemented
 }
 
 func (e *Executor) LeaderAttemptElect(ctx context.Context, params *riverdriver.LeaderElectParams) (*riverdriver.Leader, error) {
