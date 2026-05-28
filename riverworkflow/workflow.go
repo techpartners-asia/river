@@ -235,6 +235,29 @@ func (w *Workflow[TTx]) validate() error {
 		byName[t.Name] = t
 	}
 
+	// Deduplicate each task's dependency list. The readiness classifier counts
+	// declared deps as the length of the stored array but matches sibling tasks
+	// by set membership; a repeated name (e.g. from programmatically built deps)
+	// would inflate the declared count above the matchable count and wrongly
+	// cancel a task whose dependency actually completed. Dedupe here, the single
+	// choke point every Prepare path passes through, so the stored array is
+	// always a set. Order is preserved for determinism.
+	for _, t := range w.tasks {
+		if len(t.deps) < 2 {
+			continue
+		}
+		seen := make(map[string]struct{}, len(t.deps))
+		deduped := t.deps[:0]
+		for _, dep := range t.deps {
+			if _, ok := seen[dep]; ok {
+				continue
+			}
+			seen[dep] = struct{}{}
+			deduped = append(deduped, dep)
+		}
+		t.deps = deduped
+	}
+
 	indegree := make(map[string]int, len(w.tasks))
 	adj := make(map[string][]string, len(w.tasks))
 	for _, t := range w.tasks {

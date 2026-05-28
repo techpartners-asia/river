@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New migration `007_workflow_index` adds an index on `metadata->>'river:workflow_id'` (or the SQLite equivalent) for efficient workflow lookups by the scheduler.
 - Durable periodic jobs via `Config.DurablePeriodicJobs`. When `Enabled` is set, periodic jobs that have a non-empty `PeriodicJobOpts.ID` persist their next run time to a new `river_periodic_job` table so the schedule survives restarts, crashes, and leader elections. Mirrors the River Pro API surface (`Config.DurablePeriodicJobs.Enabled`, `Config.DurablePeriodicJobs.StaleThreshold`). New driver methods `PeriodicJobGetAll`, `PeriodicJobUpsertMany`, and `PeriodicJobKeepAliveAndReap` are implemented across `riverpgxv5`, `riverdatabasesql`, and `riversqlite`. New migration `008_durable_periodic_jobs` adds the `river_periodic_job` table.
 
+### Fixed
+
+- `riverworkflow`: a duplicate dependency name in a task's `Deps` (e.g. `["a", "a"]`, often from programmatically built lists) was stored verbatim in job metadata. The readiness classifier counts declared deps as the array length but matches sibling tasks by set membership, so the inflated declared count made `dep_rows_found < dep_rows_declared` and the task was wrongly cancelled even though its dependency completed successfully. `Workflow.validate` now deduplicates each task's dependency list (order-preserving) before it is rendered into metadata, the single choke point all `Prepare`/`PrepareTx` paths pass through. Adds `TestWorkflow_DeduplicatesDuplicateDeps`.
+
 ## [0.37.1] - 2026-05-15
 
 ### Fixed
