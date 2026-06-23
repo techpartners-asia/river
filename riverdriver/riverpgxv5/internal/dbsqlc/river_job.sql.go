@@ -1919,6 +1919,7 @@ WITH candidates AS (
   FROM /* TEMPLATE: schema */river_job
   WHERE state = 'pending'
     AND metadata ? 'river:workflow_id'
+    AND NOT (metadata ? 'river:workflow_wait')
   ORDER BY id
   FOR UPDATE SKIP LOCKED
   LIMIT $2::int

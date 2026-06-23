@@ -190,6 +190,7 @@ WITH candidates AS (
   FROM /* TEMPLATE: schema */river_job j
   WHERE j.state = 'pending'
     AND json_extract(j.metadata, '$."river:workflow_id"') IS NOT NULL
+    AND json_extract(j.metadata, '$."river:workflow_wait"') IS NULL
   ORDER BY j.id
   LIMIT ?2
 ),

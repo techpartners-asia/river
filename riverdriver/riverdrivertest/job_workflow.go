@@ -24,6 +24,7 @@ type workflowJobOpts struct {
 	ScheduledAt         time.Time
 	State               rivertype.JobState
 	TaskName            string
+	Wait                json.RawMessage
 	WorkflowID          string
 }
 
@@ -45,6 +46,9 @@ func insertWorkflowJob(ctx context.Context, t *testing.T, exec riverdriver.Execu
 	}
 	if opts.IgnoreDeletedDeps {
 		metadata[rivercommon.MetadataKeyWorkflowIgnoreDeletedDeps] = true
+	}
+	if opts.Wait != nil {
+		metadata[rivercommon.MetadataKeyWorkflowWait] = opts.Wait
 	}
 	metadataBytes, err := json.Marshal(metadata)
 	require.NoError(t, err)
@@ -406,6 +410,34 @@ func exerciseJobUpdateWorkflowReady[TTx any](ctx context.Context, t *testing.T, 
 			require.Len(t, updated, 1)
 			require.Equal(t, taskB.ID, updated[0].ID)
 			require.Equal(t, rivertype.JobStateAvailable, updated[0].State)
+		})
+
+		t.Run("SkipsWaitBearingTasks", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			workflowID := "wf-wait-bearing"
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{WorkflowID: workflowID, TaskName: "a", State: rivertype.JobStateCompleted})
+			// taskB has all deps satisfied but also carries a river:workflow_wait
+			// spec — the promotion query must skip it entirely so the Go
+			// scheduler can evaluate the wait condition later.
+			taskB := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "b",
+				Deps:       []string{"a"},
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			updated, err := exec.JobUpdateWorkflowReady(ctx, &riverdriver.JobUpdateWorkflowReadyParams{Max: 100, Now: now})
+			require.NoError(t, err)
+			require.Empty(t, updated, "wait-bearing task must not be promoted by the SQL promotion pass")
+
+			row, err := exec.JobGetByID(ctx, &riverdriver.JobGetByIDParams{ID: taskB.ID})
+			require.NoError(t, err)
+			require.Equal(t, rivertype.JobStatePending, row.State, "wait-bearing task must remain pending")
 		})
 	})
 }
