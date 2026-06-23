@@ -39,6 +39,7 @@ SELECT *
 FROM /* TEMPLATE: schema */river_workflow_signal
 WHERE workflow_id = @workflow_id
   AND (sqlc.narg('signal_key') IS NULL OR signal_key = cast(sqlc.narg('signal_key') AS text))
+  AND (@include_resolved OR resolved_at IS NULL)
 ORDER BY created_at, id
 LIMIT cast(@max AS integer);
 
@@ -47,5 +48,13 @@ SELECT *
 FROM /* TEMPLATE: schema */river_workflow_signal
 WHERE workflow_id = @workflow_id
   AND (sqlc.narg('signal_key') IS NULL OR signal_key = cast(sqlc.narg('signal_key') AS text))
+  AND (@include_resolved OR resolved_at IS NULL)
 ORDER BY created_at DESC, id DESC
 LIMIT cast(@max AS integer);
+
+-- name: WorkflowSignalMarkResolved :exec
+UPDATE /* TEMPLATE: schema */river_workflow_signal
+SET resolved_at = cast(@now AS text)
+WHERE workflow_id = @workflow_id
+  AND signal_key IN (sqlc.slice('signal_keys'))
+  AND resolved_at IS NULL;

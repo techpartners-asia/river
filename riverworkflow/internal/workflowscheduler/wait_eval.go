@@ -271,10 +271,11 @@ func (s *WorkflowScheduler) processWaitTask(
 	if hasSignalTerm {
 		iterCtx2, cancel2 := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
 		rawSignals, signalErr := s.exec.WorkflowSignalList(iterCtx2, &riverdriver.WorkflowSignalListParams{
-			WorkflowID:    workflowID,
-			Max:           s.config.SignalScanLimit,
-			OrderByNewest: true, // DESC so newest signals are not truncated when count > SignalScanLimit
-			Schema:        s.config.Schema,
+			WorkflowID:      workflowID,
+			IncludeResolved: true, // scheduler must see all signals; resolved_at is an API/audit filter only
+			Max:             s.config.SignalScanLimit,
+			OrderByNewest:   true, // DESC so newest signals are not truncated when count > SignalScanLimit
+			Schema:          s.config.Schema,
 		})
 		cancel2()
 		if signalErr != nil {

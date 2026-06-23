@@ -9,6 +9,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 const workflowSignalEmit = `-- name: WorkflowSignalEmit :one
@@ -96,18 +98,25 @@ SELECT id, workflow_id, signal_key, payload, idempotency_key, source, created_at
 FROM /* TEMPLATE: schema */river_workflow_signal
 WHERE workflow_id = $1
   AND ($2::text IS NULL OR signal_key = $2)
+  AND ($3::bool OR resolved_at IS NULL)
 ORDER BY created_at, id
-LIMIT $3::int
+LIMIT $4::int
 `
 
 type WorkflowSignalListParams struct {
-	WorkflowID string
-	SignalKey  sql.NullString
-	Max        int32
+	WorkflowID      string
+	SignalKey       sql.NullString
+	IncludeResolved sql.NullBool
+	Max             int32
 }
 
 func (q *Queries) WorkflowSignalList(ctx context.Context, db DBTX, arg *WorkflowSignalListParams) ([]*RiverWorkflowSignal, error) {
-	rows, err := db.QueryContext(ctx, workflowSignalList, arg.WorkflowID, arg.SignalKey, arg.Max)
+	rows, err := db.QueryContext(ctx, workflowSignalList,
+		arg.WorkflowID,
+		arg.SignalKey,
+		arg.IncludeResolved,
+		arg.Max,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -143,18 +152,25 @@ SELECT id, workflow_id, signal_key, payload, idempotency_key, source, created_at
 FROM /* TEMPLATE: schema */river_workflow_signal
 WHERE workflow_id = $1
   AND ($2::text IS NULL OR signal_key = $2)
+  AND ($3::bool OR resolved_at IS NULL)
 ORDER BY created_at DESC, id DESC
-LIMIT $3::int
+LIMIT $4::int
 `
 
 type WorkflowSignalListNewestParams struct {
-	WorkflowID string
-	SignalKey  sql.NullString
-	Max        int32
+	WorkflowID      string
+	SignalKey       sql.NullString
+	IncludeResolved sql.NullBool
+	Max             int32
 }
 
 func (q *Queries) WorkflowSignalListNewest(ctx context.Context, db DBTX, arg *WorkflowSignalListNewestParams) ([]*RiverWorkflowSignal, error) {
-	rows, err := db.QueryContext(ctx, workflowSignalListNewest, arg.WorkflowID, arg.SignalKey, arg.Max)
+	rows, err := db.QueryContext(ctx, workflowSignalListNewest,
+		arg.WorkflowID,
+		arg.SignalKey,
+		arg.IncludeResolved,
+		arg.Max,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -183,4 +199,23 @@ func (q *Queries) WorkflowSignalListNewest(ctx context.Context, db DBTX, arg *Wo
 		return nil, err
 	}
 	return items, nil
+}
+
+const workflowSignalMarkResolved = `-- name: WorkflowSignalMarkResolved :exec
+UPDATE /* TEMPLATE: schema */river_workflow_signal
+SET resolved_at = $1::timestamptz
+WHERE workflow_id = $2
+  AND signal_key = ANY($3::text[])
+  AND resolved_at IS NULL
+`
+
+type WorkflowSignalMarkResolvedParams struct {
+	Now        time.Time
+	WorkflowID string
+	SignalKeys []string
+}
+
+func (q *Queries) WorkflowSignalMarkResolved(ctx context.Context, db DBTX, arg *WorkflowSignalMarkResolvedParams) error {
+	_, err := db.ExecContext(ctx, workflowSignalMarkResolved, arg.Now, arg.WorkflowID, pq.Array(arg.SignalKeys))
+	return err
 }

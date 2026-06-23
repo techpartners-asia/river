@@ -305,8 +305,16 @@ type Executor interface {
 
 	// WorkflowSignalList returns signals for the given workflow, ordered by
 	// (created_at, id). Pass a non-nil SignalKey to filter to a specific signal
-	// type. Max caps the number of returned rows.
+	// type. Max caps the number of returned rows. When IncludeResolved is false
+	// (the default), only rows with resolved_at IS NULL are returned.
 	WorkflowSignalList(ctx context.Context, params *WorkflowSignalListParams) ([]*rivertype.WorkflowSignal, error)
+
+	// WorkflowSignalMarkResolved stamps resolved_at = now on all unresolved
+	// signals (resolved_at IS NULL) for the given workflow whose signal_key
+	// appears in SignalKeys. It is idempotent: already-resolved rows are not
+	// updated.
+	// PARITY: resolution-marking semantics inferred; Pro may scope differently.
+	WorkflowSignalMarkResolved(ctx context.Context, params *WorkflowSignalMarkResolvedParams) error
 }
 
 // ExecutorTx is an executor which is a transaction. In addition to standard
@@ -1022,6 +1030,12 @@ type WorkflowSignalListParams struct {
 	// SignalKey optionally filters to a specific signal type.
 	SignalKey *string
 
+	// IncludeResolved, when true, includes signals whose resolved_at is set.
+	// When false (the default), only unresolved signals (resolved_at IS NULL)
+	// are returned. The scheduler always passes true so that resolved_at is
+	// purely an API/audit filter and never affects wait evaluation.
+	IncludeResolved bool
+
 	// Max is the maximum number of rows to return.
 	Max int
 
@@ -1031,6 +1045,23 @@ type WorkflowSignalListParams struct {
 	// view. Use true for LatestForTask and the scheduler's per-key load; use false
 	// for List and ListForTask (history views).
 	OrderByNewest bool
+
+	// Schema is the database schema to use. Empty means the default schema.
+	Schema string
+}
+
+// WorkflowSignalMarkResolvedParams are parameters for marking workflow signals
+// as resolved.
+type WorkflowSignalMarkResolvedParams struct {
+	// WorkflowID is the workflow whose signals to mark resolved.
+	WorkflowID string
+
+	// SignalKeys is the list of signal keys to mark resolved. Only rows with
+	// resolved_at IS NULL are updated.
+	SignalKeys []string
+
+	// Now is the timestamp to set as resolved_at.
+	Now time.Time
 
 	// Schema is the database schema to use. Empty means the default schema.
 	Schema string

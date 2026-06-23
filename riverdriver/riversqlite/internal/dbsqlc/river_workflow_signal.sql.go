@@ -7,6 +7,7 @@ package dbsqlc
 
 import (
 	"context"
+	"strings"
 )
 
 const workflowSignalEmit = `-- name: WorkflowSignalEmit :one
@@ -94,18 +95,25 @@ SELECT id, workflow_id, signal_key, payload, idempotency_key, source, created_at
 FROM /* TEMPLATE: schema */river_workflow_signal
 WHERE workflow_id = ?1
   AND (?2 IS NULL OR signal_key = cast(?2 AS text))
+  AND (?3 OR resolved_at IS NULL)
 ORDER BY created_at, id
-LIMIT cast(?3 AS integer)
+LIMIT cast(?4 AS integer)
 `
 
 type WorkflowSignalListParams struct {
-	WorkflowID string
-	SignalKey  interface{}
-	Max        int64
+	WorkflowID      string
+	SignalKey       interface{}
+	IncludeResolved interface{}
+	Max             int64
 }
 
 func (q *Queries) WorkflowSignalList(ctx context.Context, db DBTX, arg *WorkflowSignalListParams) ([]*RiverWorkflowSignal, error) {
-	rows, err := db.QueryContext(ctx, workflowSignalList, arg.WorkflowID, arg.SignalKey, arg.Max)
+	rows, err := db.QueryContext(ctx, workflowSignalList,
+		arg.WorkflowID,
+		arg.SignalKey,
+		arg.IncludeResolved,
+		arg.Max,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -141,18 +149,25 @@ SELECT id, workflow_id, signal_key, payload, idempotency_key, source, created_at
 FROM /* TEMPLATE: schema */river_workflow_signal
 WHERE workflow_id = ?1
   AND (?2 IS NULL OR signal_key = cast(?2 AS text))
+  AND (?3 OR resolved_at IS NULL)
 ORDER BY created_at DESC, id DESC
-LIMIT cast(?3 AS integer)
+LIMIT cast(?4 AS integer)
 `
 
 type WorkflowSignalListNewestParams struct {
-	WorkflowID string
-	SignalKey  interface{}
-	Max        int64
+	WorkflowID      string
+	SignalKey       interface{}
+	IncludeResolved interface{}
+	Max             int64
 }
 
 func (q *Queries) WorkflowSignalListNewest(ctx context.Context, db DBTX, arg *WorkflowSignalListNewestParams) ([]*RiverWorkflowSignal, error) {
-	rows, err := db.QueryContext(ctx, workflowSignalListNewest, arg.WorkflowID, arg.SignalKey, arg.Max)
+	rows, err := db.QueryContext(ctx, workflowSignalListNewest,
+		arg.WorkflowID,
+		arg.SignalKey,
+		arg.IncludeResolved,
+		arg.Max,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -181,4 +196,35 @@ func (q *Queries) WorkflowSignalListNewest(ctx context.Context, db DBTX, arg *Wo
 		return nil, err
 	}
 	return items, nil
+}
+
+const workflowSignalMarkResolved = `-- name: WorkflowSignalMarkResolved :exec
+UPDATE /* TEMPLATE: schema */river_workflow_signal
+SET resolved_at = cast(?1 AS text)
+WHERE workflow_id = ?2
+  AND signal_key IN (/*SLICE:signal_keys*/?)
+  AND resolved_at IS NULL
+`
+
+type WorkflowSignalMarkResolvedParams struct {
+	Now        string
+	WorkflowID string
+	SignalKeys []string
+}
+
+func (q *Queries) WorkflowSignalMarkResolved(ctx context.Context, db DBTX, arg *WorkflowSignalMarkResolvedParams) error {
+	query := workflowSignalMarkResolved
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.Now)
+	queryParams = append(queryParams, arg.WorkflowID)
+	if len(arg.SignalKeys) > 0 {
+		for _, v := range arg.SignalKeys {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:signal_keys*/?", strings.Repeat(",?", len(arg.SignalKeys))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:signal_keys*/?", "NULL", 1)
+	}
+	_, err := db.ExecContext(ctx, query, queryParams...)
+	return err
 }
