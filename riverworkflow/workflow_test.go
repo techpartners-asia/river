@@ -3,6 +3,7 @@ package riverworkflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -183,4 +184,40 @@ func TestWorkflow_Prepare_PreservesExistingMetadata(t *testing.T) {
 	require.NoError(t, json.Unmarshal(res.Jobs[0].InsertOpts.Metadata, &meta))
 	require.Equal(t, "user_value", meta["user_key"])
 	require.Equal(t, w.ID(), meta[rivercommon.MetadataKeyWorkflowID])
+}
+
+func TestWorkflowWaitMetadata(t *testing.T) {
+	w := newWorkflow[any](&WorkflowOpts{ID: "wf-wait"}, nil, "")
+	w.Add("gate", sortArgs{}, nil, &WorkflowTaskOpts{
+		Wait: &WaitSpec{
+			Terms: []WaitTermSpec{WaitTermSignal("ok", "ok", "payload.ok")},
+			Expr:  "ok",
+		},
+	})
+
+	res, err := w.Prepare(context.Background())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	job := res.Jobs[0]
+	if job.InsertOpts == nil || !job.InsertOpts.Pending {
+		t.Fatalf("wait-bearing task must be Pending")
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(job.InsertOpts.Metadata, &meta); err != nil {
+		t.Fatalf("metadata: %v", err)
+	}
+	if _, ok := meta[rivercommon.MetadataKeyWorkflowWait]; !ok {
+		t.Fatalf("expected %s in metadata, got %v", rivercommon.MetadataKeyWorkflowWait, meta)
+	}
+}
+
+func TestWorkflowWaitInvalidRejected(t *testing.T) {
+	w := newWorkflow[any](&WorkflowOpts{ID: "wf-bad"}, nil, "")
+	w.Add("gate", sortArgs{}, nil, &WorkflowTaskOpts{
+		Wait: &WaitSpec{Terms: []WaitTermSpec{WaitTerm("a", "true")}, Expr: ""},
+	})
+	if _, err := w.Prepare(context.Background()); !errors.Is(err, ErrWaitExprEmpty) {
+		t.Fatalf("want ErrWaitExprEmpty, got %v", err)
+	}
 }
