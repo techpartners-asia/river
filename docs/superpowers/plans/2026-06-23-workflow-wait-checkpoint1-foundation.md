@@ -576,6 +576,8 @@ git commit -m "Skip wait-bearing tasks in dep-promotion SQL across all drivers"
 
 Wait-bearing tasks are now *held* but never *released* (no evaluator yet). Checkpoint 2 adds the `waiteval` CEL engine, timer anchor resolution, and the scheduler pass that evaluates timer-only waits and promotes via a new `JobPromoteWorkflowTask`. Its plan: `docs/superpowers/plans/2026-06-23-workflow-wait-checkpoint2-timers-cel.md` (to be written).
 
+**REQUIRED CP2 design note (from CP1 final review):** Excluding wait-bearing tasks from the `candidates` CTE removes them from the dep-promotion query's *failure* branches too — not just promotion. So a wait-bearing task whose dependency reaches a failing terminal state (discarded/cancelled, without the matching ignore flag) is currently neither promoted nor cancelled by SQL, and once CP2's scheduler only promotes resolved waits, such a task would hang `pending` forever. CP2's wait-evaluation pass MUST also cancel wait-bearing tasks whose deps failed (mirroring the `classified` CTE's cancel-on-discarded/cancelled/missing-dep logic, honoring `IgnoreCancelled/Discarded/DeletedDeps`), before or alongside evaluating the wait. This is a hard requirement, not optional.
+
 ## Self-review notes
 
 - **Spec coverage (Checkpoint 1 slice of §11.1):** metadata key ✓ (Task 1), WaitSpec types + Validate ✓ (Task 2), `WorkflowTaskOpts.Wait` + metadata injection + Pending ✓ (Task 3), SQL skip across 3 drivers + conformance ✓ (Task 4). Scheduler no-op pass deferred to Checkpoint 2 (it needs the fetch/promote driver methods, which belong with the evaluator) — this does not affect Checkpoint 1's exit criteria since held tasks simply remain pending.
