@@ -479,8 +479,9 @@ type JobGetWorkflowTasksParams struct {
 // tasks that carry the river:workflow_wait metadata key. The query is
 // dialect-correct for all drivers (no Postgres-only ? operator).
 type JobGetWorkflowWaitTasksParams struct {
-	Max    int
-	Schema string
+	AfterID int64
+	Max     int
+	Schema  string
 }
 
 type JobInsertFastParams struct {

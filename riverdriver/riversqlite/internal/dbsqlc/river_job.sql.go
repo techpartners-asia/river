@@ -970,16 +970,24 @@ SELECT id, args, attempt, attempted_at, attempted_by, created_at, errors, finali
 FROM /* TEMPLATE: schema */river_job
 WHERE state = 'pending'
   AND json_extract(metadata, '$."river:workflow_wait"') IS NOT NULL
+  AND id > ?1
 ORDER BY id
-LIMIT ?1
+LIMIT ?2
 `
+
+type JobGetWorkflowWaitTasksParams struct {
+	AfterID int64
+	Max     int64
+}
 
 // Returns pending tasks that carry the river:workflow_wait metadata key.
 // Uses json_extract (dialect-correct for SQLite) instead of the Postgres-only
 // `metadata ? 'key'` jsonb operator. Mirrors the skip-clause in
 // JobClassifyWorkflowReady: json_extract IS NOT NULL <=> key present.
-func (q *Queries) JobGetWorkflowWaitTasks(ctx context.Context, db DBTX, max int64) ([]*RiverJob, error) {
-	rows, err := db.QueryContext(ctx, jobGetWorkflowWaitTasks, max)
+// Cursor pagination via @after_id allows callers to page through all pending
+// wait tasks without re-fetching the same low-id rows each tick.
+func (q *Queries) JobGetWorkflowWaitTasks(ctx context.Context, db DBTX, arg *JobGetWorkflowWaitTasksParams) ([]*RiverJob, error) {
+	rows, err := db.QueryContext(ctx, jobGetWorkflowWaitTasks, arg.AfterID, arg.Max)
 	if err != nil {
 		return nil, err
 	}

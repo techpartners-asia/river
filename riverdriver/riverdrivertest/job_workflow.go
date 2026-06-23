@@ -447,6 +447,45 @@ func exerciseJobGetWorkflowWaitTasks[TTx any](ctx context.Context, t *testing.T,
 			require.Equal(t, waitTask.ID, rows[0].ID)
 			require.Equal(t, rivertype.JobStatePending, rows[0].State)
 		})
+
+		t.Run("AfterIDFiltering", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+
+			workflowID := "wf-wait-after-id"
+
+			// Insert two pending wait tasks. IDs are auto-assigned in ascending order.
+			firstWaitTask := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "wait-first",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"terms":[],"expr":"true"}`),
+			})
+			secondWaitTask := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "wait-second",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"terms":[],"expr":"true"}`),
+			})
+
+			// With AfterID = first task's id, only the second task should be returned.
+			rows, err := exec.JobGetWorkflowWaitTasks(ctx, &riverdriver.JobGetWorkflowWaitTasksParams{
+				AfterID: firstWaitTask.ID,
+				Max:     100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 1, "only the task with id > AfterID must be returned")
+			require.Equal(t, secondWaitTask.ID, rows[0].ID)
+
+			// With AfterID = 0 (default), both tasks should be returned.
+			rows, err = exec.JobGetWorkflowWaitTasks(ctx, &riverdriver.JobGetWorkflowWaitTasksParams{
+				AfterID: 0,
+				Max:     100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 2, "both pending wait tasks must be returned when AfterID=0")
+		})
 	})
 }
 

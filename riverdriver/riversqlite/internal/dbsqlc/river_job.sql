@@ -620,11 +620,14 @@ ORDER BY id;
 -- Uses json_extract (dialect-correct for SQLite) instead of the Postgres-only
 -- `metadata ? 'key'` jsonb operator. Mirrors the skip-clause in
 -- JobClassifyWorkflowReady: json_extract IS NOT NULL <=> key present.
+-- Cursor pagination via @after_id allows callers to page through all pending
+-- wait tasks without re-fetching the same low-id rows each tick.
 -- name: JobGetWorkflowWaitTasks :many
 SELECT *
 FROM /* TEMPLATE: schema */river_job
 WHERE state = 'pending'
   AND json_extract(metadata, '$."river:workflow_wait"') IS NOT NULL
+  AND id > @after_id
 ORDER BY id
 LIMIT @max;
 

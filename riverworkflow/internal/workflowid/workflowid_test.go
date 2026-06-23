@@ -1,7 +1,9 @@
 package workflowid
 
 import (
+	"encoding/binary"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -27,6 +29,60 @@ func TestNew_UniqueAndSortable(t *testing.T) {
 		require.NotEqual(t, ids[i-1], ids[i], "ULIDs must be unique")
 		require.True(t, ids[i-1] <= ids[i], "ULIDs must be monotonically non-decreasing (i=%d %q vs %q)", i, ids[i-1], ids[i])
 	}
+}
+
+func TestTimestamp(t *testing.T) {
+	t.Parallel()
+
+	t.Run("RoundTripsWithNew", func(t *testing.T) {
+		t.Parallel()
+
+		before := time.Now().UTC().Truncate(time.Millisecond)
+		id := New()
+		after := time.Now().UTC().Add(time.Millisecond).Truncate(time.Millisecond)
+
+		ts, err := Timestamp(id)
+		require.NoError(t, err)
+		require.WithinDuration(t, before, ts, after.Sub(before)+time.Millisecond,
+			"decoded timestamp must be within the generation window")
+		require.True(t, !ts.Before(before), "decoded timestamp must not be before generation start")
+		require.True(t, !ts.After(after), "decoded timestamp must not be after generation end")
+	})
+
+	t.Run("KnownID", func(t *testing.T) {
+		t.Parallel()
+
+		// Encode a known ms value and verify the round-trip.
+		// ms = 1700000000000 (2023-11-14 22:13:20 UTC)
+		const knownMS = int64(1700000000000)
+		knownTime := time.UnixMilli(knownMS).UTC()
+
+		var raw [16]byte
+		binary.BigEndian.PutUint64(raw[0:8], uint64(knownMS)<<16) //nolint:gosec
+		id := encode(raw)
+
+		ts, err := Timestamp(id)
+		require.NoError(t, err)
+		require.Equal(t, knownTime, ts)
+	})
+
+	t.Run("TooShortID", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Timestamp("ABCD")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "too short")
+	})
+
+	t.Run("InvalidCharacter", func(t *testing.T) {
+		t.Parallel()
+
+		// Build an id with an invalid character in the first 10 positions.
+		// Lowercase letters are not in the Crockford base32 alphabet.
+		_, err := Timestamp("000000000u0000000000000000")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid character")
+	})
 }
 
 func isCrockford(r rune) bool {

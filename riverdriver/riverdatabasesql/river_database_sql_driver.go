@@ -392,7 +392,10 @@ func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.
 }
 
 func (e *Executor) JobGetWorkflowWaitTasks(ctx context.Context, params *riverdriver.JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error) {
-	jobs, err := dbsqlc.New().JobGetWorkflowWaitTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, int32(min(params.Max, math.MaxInt32))) //nolint:gosec
+	jobs, err := dbsqlc.New().JobGetWorkflowWaitTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowWaitTasksParams{
+		AfterID: params.AfterID,
+		Max:     int32(min(params.Max, math.MaxInt32)), //nolint:gosec
+	})
 	if err != nil {
 		return nil, interpretError(err)
 	}

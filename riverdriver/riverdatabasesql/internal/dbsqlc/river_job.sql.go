@@ -873,15 +873,23 @@ SELECT id, args, attempt, attempted_at, attempted_by, created_at, errors, finali
 FROM /* TEMPLATE: schema */river_job
 WHERE state = 'pending'::/* TEMPLATE: schema */river_job_state
   AND metadata ? 'river:workflow_wait'
+  AND id > $1::bigint
 ORDER BY id
-LIMIT $1::int
+LIMIT $2::int
 `
+
+type JobGetWorkflowWaitTasksParams struct {
+	AfterID int64
+	Max     int32
+}
 
 // Returns pending tasks that carry the river:workflow_wait metadata key.
 // Used by the workflow scheduler's evaluateWaits pass (dialect-correct alternative
-// to the raw `metadata ? 'key'` Postgres-only operator).
-func (q *Queries) JobGetWorkflowWaitTasks(ctx context.Context, db DBTX, max int32) ([]*RiverJob, error) {
-	rows, err := db.QueryContext(ctx, jobGetWorkflowWaitTasks, max)
+// to the raw `metadata ? 'key'` Postgres-only operator). Cursor pagination via
+// @after_id allows callers to page through all pending wait tasks without
+// re-fetching the same low-id rows each tick.
+func (q *Queries) JobGetWorkflowWaitTasks(ctx context.Context, db DBTX, arg *JobGetWorkflowWaitTasksParams) ([]*RiverJob, error) {
+	rows, err := db.QueryContext(ctx, jobGetWorkflowWaitTasks, arg.AfterID, arg.Max)
 	if err != nil {
 		return nil, err
 	}

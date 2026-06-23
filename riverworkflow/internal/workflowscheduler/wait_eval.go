@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river/rivershared/riversharedmaintenance"
 	"github.com/riverqueue/river/rivertype"
 	"github.com/riverqueue/river/riverworkflow/internal/waiteval"
+	"github.com/riverqueue/river/riverworkflow/internal/workflowid"
 )
 
 // waitSpecJSON is a private struct that mirrors the JSON shape of a WaitSpec as
@@ -49,49 +50,72 @@ type programCacheEntry struct {
 }
 
 // evaluateWaits is the scheduler's wait-resolution pass. It:
-//  1. Lists all pending tasks that carry a river:workflow_wait key.
+//  1. Lists all pending tasks that carry a river:workflow_wait key using cursor
+//     pagination (id > afterID) to drain all pending wait tasks across pages.
 //  2. For each, classifies its deps.
 //  3. If deps Failed → cancel the task.
 //  4. If deps Pending → skip.
 //  5. If deps Satisfied → record wait_started_at on first sight; compile + eval
 //     the CEL wait condition. If true → promote.
+//
+// Cursor pagination ensures that unresolved low-id tasks (which stay pending
+// and would be re-fetched every tick with a naive LIMIT) do not shadow
+// higher-id tasks that are ready to promote.
 func (s *WorkflowScheduler) evaluateWaits(ctx context.Context, progCache map[[32]byte]*programCacheEntry) error {
 	now := s.Time.Now().UTC()
-
-	// List pending wait-bearing tasks using the dialect-correct driver method.
-	// Previously this used JobList with a raw `metadata ? 'key'` Postgres-only
-	// jsonb operator, which caused SQLite to treat `?` as a positional bind
-	// placeholder and error every tick, hanging all wait-bearing tasks.
-	iterCtx, cancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
-	rows, err := s.exec.JobGetWorkflowWaitTasks(iterCtx, &riverdriver.JobGetWorkflowWaitTasksParams{
-		Max:    s.config.BatchSize,
-		Schema: s.config.Schema,
-	})
-	cancel()
-	if err != nil {
-		return fmt.Errorf("evaluateWaits: list pending wait tasks: %w", err)
-	}
-
-	if len(rows) == 0 {
-		return nil
-	}
-
-	s.Logger.DebugContext(ctx, s.Name+": evaluateWaits: found pending wait tasks",
-		slog.Int("count", len(rows)))
 
 	// Cache workflow siblings within this tick: workflowID → sibling-name map.
 	siblingsCache := map[string]map[string]*rivertype.JobRow{}
 
-	for _, row := range rows {
+	var afterID int64
+	for {
+		// Check outer context before each page fetch so total time is bounded
+		// even when individual per-iteration timeouts are long.
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		if err := s.processWaitTask(ctx, row, now, progCache, siblingsCache); err != nil {
-			// Log per-task errors and continue — don't abort the whole pass.
-			s.Logger.WarnContext(ctx, s.Name+": evaluateWaits: error processing task",
-				slog.Int64("job_id", row.ID),
-				slog.String("error", err.Error()))
+		// List the next page of pending wait-bearing tasks using the
+		// dialect-correct driver method. Cursor via AfterID avoids re-fetching
+		// the same low-id rows that remain pending (unresolved) across ticks.
+		iterCtx, cancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
+		rows, err := s.exec.JobGetWorkflowWaitTasks(iterCtx, &riverdriver.JobGetWorkflowWaitTasksParams{
+			AfterID: afterID,
+			Max:     s.config.BatchSize,
+			Schema:  s.config.Schema,
+		})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("evaluateWaits: list pending wait tasks: %w", err)
+		}
+
+		if len(rows) == 0 {
+			break
+		}
+
+		s.Logger.DebugContext(ctx, s.Name+": evaluateWaits: found pending wait tasks",
+			slog.Int("count", len(rows)),
+			slog.Int64("after_id", afterID))
+
+		for _, row := range rows {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
+			if err := s.processWaitTask(ctx, row, now, progCache, siblingsCache); err != nil {
+				// Log per-task errors and continue — don't abort the whole pass.
+				s.Logger.WarnContext(ctx, s.Name+": evaluateWaits: error processing task",
+					slog.Int64("job_id", row.ID),
+					slog.String("error", err.Error()))
+			}
+		}
+
+		// Advance cursor to the last id in this page (rows are ORDER BY id).
+		afterID = rows[len(rows)-1].ID
+
+		// If we got fewer rows than the batch size, this is the last page.
+		if len(rows) < s.config.BatchSize {
+			break
 		}
 	}
 	return nil
@@ -199,11 +223,20 @@ func (s *WorkflowScheduler) processWaitTask(
 		progCache[cacheKey] = entry
 	}
 
-	// Build timer anchors.
+	// Build timer anchors. Decode WorkflowCreatedAt from the workflow-id ULID
+	// timestamp so that TimerAfterWorkflowCreated anchors correctly even for
+	// tasks added via WorkflowFromExisting or dynamically. Fall back to
+	// row.CreatedAt if the decode fails (robustness).
+	workflowCreatedAt, err := workflowid.Timestamp(workflowID)
+	if err != nil {
+		s.Logger.DebugContext(ctx, s.Name+": evaluateWaits: failed to decode workflow ULID timestamp, falling back to row.CreatedAt",
+			slog.Int64("job_id", row.ID),
+			slog.String("workflow_id", workflowID),
+			slog.String("error", err.Error()))
+		workflowCreatedAt = row.CreatedAt
+	}
 	anchors := waiteval.TimerAnchors{
-		// Use the task's own CreatedAt as the workflow creation anchor.
-		// Tasks in a workflow insert together so CreatedAt ≈ workflow creation time.
-		WorkflowCreatedAt: row.CreatedAt,
+		WorkflowCreatedAt: workflowCreatedAt,
 		WaitStartedAt:     waitStartedAt,
 		DepFinalizedAt:    make(map[string]time.Time),
 	}

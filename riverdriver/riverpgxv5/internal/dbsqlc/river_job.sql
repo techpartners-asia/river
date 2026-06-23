@@ -740,12 +740,15 @@ ORDER BY id;
 
 -- Returns pending tasks that carry the river:workflow_wait metadata key.
 -- Used by the workflow scheduler's evaluateWaits pass (dialect-correct alternative
--- to the raw `metadata ? 'key'` Postgres-only operator).
+-- to the raw `metadata ? 'key'` Postgres-only operator). Cursor pagination via
+-- @after_id allows callers to page through all pending wait tasks without
+-- re-fetching the same low-id rows each tick.
 -- name: JobGetWorkflowWaitTasks :many
 SELECT *
 FROM /* TEMPLATE: schema */river_job
 WHERE state = 'pending'::/* TEMPLATE: schema */river_job_state
   AND metadata ? 'river:workflow_wait'
+  AND id > @after_id::bigint
 ORDER BY id
 LIMIT @max::int;
 
