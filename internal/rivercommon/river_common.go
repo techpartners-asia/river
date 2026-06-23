@@ -78,6 +78,12 @@ const (
 	// a workflow wait condition was resolved (i.e. the task was promoted).
 	MetadataKeyWorkflowWaitResolvedAt = "river:workflow_wait_resolved_at"
 
+	// MetadataKeyWorkflowWaitStartedAt records the RFC3339Nano timestamp at
+	// which the scheduler first evaluated a workflow wait task's wait condition
+	// in the Satisfied dep-state. Timer terms anchor their "after_wait_started"
+	// offset to this timestamp so the anchor is stable across ticks.
+	MetadataKeyWorkflowWaitStartedAt = "river:workflow_wait_started_at"
+
 	// MetadataKeyWorkflowWaitFailedReason records the reason a workflow wait
 	// task was cancelled (e.g. "dependency failed").
 	MetadataKeyWorkflowWaitFailedReason = "river:workflow_wait_failed_reason"

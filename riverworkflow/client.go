@@ -40,9 +40,10 @@ func NewClient[TTx any](driver riverdriver.Driver[TTx], config *Config) (*Client
 	pilot := &workflowPilot{
 		exec: driver.GetExecutor(),
 		schedCfg: &workflowscheduler.Config{
-			BatchSize: config.WorkflowScheduler.BatchSize,
-			Interval:  config.WorkflowScheduler.Interval,
-			Schema:    config.Schema,
+			BatchSize:           config.WorkflowScheduler.BatchSize,
+			Interval:            config.WorkflowScheduler.Interval,
+			Schema:              config.Schema,
+			TimerPollerInterval: config.WorkflowScheduler.WorkflowTimerPollerInterval,
 		},
 	}
 	plugin := &workflowDriverPlugin[TTx]{Driver: driver, pilot: pilot}

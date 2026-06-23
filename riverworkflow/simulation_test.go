@@ -3,6 +3,7 @@ package riverworkflow_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"sort"
 	"strconv"
@@ -397,3 +398,234 @@ func TestDeadlineMetadataInjected(t *testing.T) {
 	}
 }
 
+// failingWorkerArgs is the job args type for a worker that always fails
+// (returns a non-nil error). Used to exercise the dep-failed / wait-cancel
+// path where a dependency is discarded after exhausting its attempts.
+type failingWorkerArgs struct {
+	Task string `json:"task"`
+}
+
+func (failingWorkerArgs) Kind() string { return "riverworkflow_sim_fail" }
+
+type failingWorker struct {
+	river.WorkerDefaults[failingWorkerArgs]
+}
+
+func (w *failingWorker) Work(_ context.Context, _ *river.Job[failingWorkerArgs]) error {
+	return errors.New("worker always fails")
+}
+
+// TestSimulation_WaitTimer_PromotesAfterDuration verifies that a task gated
+// by WaitTermTimer(TimerAfterWaitStarted("d", short)) is promoted once the
+// scheduler ticks past the timer duration. The test uses wall-clock time with a
+// short duration (50 ms) and a fast scheduler interval so it completes quickly.
+func TestSimulation_WaitTimer_PromotesAfterDuration(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
+	require.NoError(t, err)
+	defer dbPool.Close()
+
+	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+
+	w := &recordingWorker{mu: &sync.Mutex{}, dur: 0}
+	workers := river.NewWorkers()
+	river.AddWorker(workers, w)
+
+	// Use a short timer-poller interval so the timer fires quickly.
+	client, err := riverworkflow.NewClient(riverpgxv5.New(dbPool), &riverworkflow.Config{
+		Config: river.Config{
+			Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}},
+			Schema:  schema,
+			Workers: workers,
+		},
+		WorkflowScheduler: riverworkflow.WorkflowSchedulerConfig{
+			Interval:                    100 * time.Millisecond,
+			WorkflowTimerPollerInterval: 50 * time.Millisecond,
+		},
+	})
+	require.NoError(t, err)
+
+	subscribeChan, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	// Build a simple workflow: task "a" has no deps, task "b" depends on "a"
+	// and is gated by a timer that fires 100 ms after wait_started_at.
+	timerDur := 100 * time.Millisecond
+	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{Name: "wait-timer-test"})
+	a := wf.Add("a", recordingWorkerArgs{Task: "a"}, nil, nil)
+	wf.Add("b", recordingWorkerArgs{Task: "b"}, nil, &riverworkflow.WorkflowTaskOpts{
+		Deps: []string{a.Name},
+		Wait: &riverworkflow.WaitSpec{
+			Terms: []riverworkflow.WaitTermSpec{
+				riverworkflow.WaitTermTimer(riverworkflow.TimerAfterWaitStarted("d", timerDur)),
+			},
+			Expr: "d",
+		},
+	})
+
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	_, err = client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+
+	require.NoError(t, client.Start(ctx))
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		require.NoError(t, client.Stop(stopCtx))
+	}()
+
+	// Wait for both tasks to complete.
+	timeout := time.After(20 * time.Second)
+	for completed := 0; completed < 2; {
+		select {
+		case <-subscribeChan:
+			completed++
+		case <-timeout:
+			t.Fatalf("timed out waiting for 2 completions; got %d", completed)
+		}
+	}
+
+	// Verify both tasks completed.
+	tasks, err := wf.LoadAll(ctx)
+	require.NoError(t, err)
+	for _, name := range []string{"a", "b"} {
+		row, err := tasks.Get(name)
+		require.NoError(t, err)
+		require.Equal(t, rivertype.JobStateCompleted, row.State, "task %s should be completed", name)
+	}
+}
+
+// TestSimulation_WaitCancelledOnFailedDep verifies that a wait-bearing task
+// whose dependency is discarded (after MaxAttempts=1) gets cancelled by the
+// scheduler's evaluateWaits pass.
+func TestSimulation_WaitCancelledOnFailedDep(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
+	require.NoError(t, err)
+	defer dbPool.Close()
+
+	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &failingWorker{})
+	river.AddWorker(workers, &recordingWorker{mu: &sync.Mutex{}, dur: 0})
+
+	client, err := riverworkflow.NewClient(riverpgxv5.New(dbPool), &riverworkflow.Config{
+		Config: river.Config{
+			Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}},
+			Schema:  schema,
+			Workers: workers,
+		},
+		WorkflowScheduler: riverworkflow.WorkflowSchedulerConfig{
+			Interval:                    100 * time.Millisecond,
+			WorkflowTimerPollerInterval: 50 * time.Millisecond,
+		},
+	})
+	require.NoError(t, err)
+
+	// Subscribe to both completed and cancelled events to detect terminal states.
+	completedChan, completedCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer completedCancel()
+	cancelledChan, cancelledCancel := client.Subscribe(river.EventKindJobCancelled)
+	defer cancelledCancel()
+
+	// Workflow: "dep" fails (MaxAttempts=1 so it discards after 1 attempt),
+	// "waiter" depends on "dep" and has a Wait spec with a timer.
+	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{Name: "wait-cancel-on-fail"})
+	dep := wf.Add("dep", failingWorkerArgs{Task: "dep"},
+		&river.InsertOpts{MaxAttempts: 1}, nil)
+	wf.Add("waiter", recordingWorkerArgs{Task: "waiter"}, nil, &riverworkflow.WorkflowTaskOpts{
+		Deps: []string{dep.Name},
+		Wait: &riverworkflow.WaitSpec{
+			Terms: []riverworkflow.WaitTermSpec{
+				riverworkflow.WaitTermTimer(riverworkflow.TimerAfterWaitStarted("t", 24*time.Hour)),
+			},
+			Expr: "t",
+		},
+	})
+
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	_, err = client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+
+	require.NoError(t, client.Start(ctx))
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		require.NoError(t, client.Stop(stopCtx))
+	}()
+
+	// Wait for "dep" to be discarded and "waiter" to be cancelled.
+	// dep will complete (go to discarded), waiter should be cancelled.
+	// We need 1 discarded + 1 cancelled event; we get discarded via the
+	// completed channel... actually river uses EventKindJobCancelled for cancelled;
+	// for discarded we need a different event. Let's poll the DB instead.
+	timeout := time.After(20 * time.Second)
+
+	// First, wait for dep to be discarded (it will appear as completed in some
+	// event types, but we poll the DB for accuracy).
+	var depDiscarded bool
+	var waiterCancelled bool
+	for !depDiscarded || !waiterCancelled {
+		select {
+		case <-timeout:
+			tasks, _ := wf.LoadAll(ctx)
+			depRow, _ := tasks.Get("dep")
+			waiterRow, _ := tasks.Get("waiter")
+			depState := "unknown"
+			waiterState := "unknown"
+			if depRow != nil {
+				depState = string(depRow.State)
+			}
+			if waiterRow != nil {
+				waiterState = string(waiterRow.State)
+			}
+			t.Fatalf("timed out: dep=%s waiter=%s", depState, waiterState)
+		case <-completedChan:
+			// Could be dep discarded appearing here — check DB.
+		case <-cancelledChan:
+			// Could be waiter cancelled appearing here.
+		case <-time.After(100 * time.Millisecond):
+			// Poll the DB.
+		}
+
+		tasks, err := wf.LoadAll(ctx)
+		if err != nil {
+			continue
+		}
+		depRow, err := tasks.Get("dep")
+		if err == nil && depRow.State == rivertype.JobStateDiscarded {
+			depDiscarded = true
+		}
+		waiterRow, err := tasks.Get("waiter")
+		if err == nil && waiterRow.State == rivertype.JobStateCancelled {
+			waiterCancelled = true
+		}
+	}
+
+	// Final assertions.
+	tasks, err := wf.LoadAll(ctx)
+	require.NoError(t, err)
+	depRow, err := tasks.Get("dep")
+	require.NoError(t, err)
+	require.Equal(t, rivertype.JobStateDiscarded, depRow.State, "dep should be discarded")
+	waiterRow, err := tasks.Get("waiter")
+	require.NoError(t, err)
+	require.Equal(t, rivertype.JobStateCancelled, waiterRow.State, "waiter should be cancelled because its dep failed")
+
+	// The waiter should carry the failed_reason metadata key.
+	var waiterMeta map[string]any
+	require.NoError(t, json.Unmarshal(waiterRow.Metadata, &waiterMeta))
+	require.Contains(t, waiterMeta, rivercommon.MetadataKeyWorkflowWaitFailedReason,
+		"waiter should carry river:workflow_wait_failed_reason in metadata")
+}

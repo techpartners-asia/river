@@ -36,6 +36,12 @@ type Config struct {
 	BatchSize int
 	Interval  time.Duration
 	Schema    string
+
+	// TimerPollerInterval is the tick interval used when the scheduler wants
+	// to re-evaluate timer-based wait expressions more frequently than the
+	// standard Interval. When > 0, the scheduler runs at
+	// min(Interval, TimerPollerInterval). Defaults to 0 (disabled; use Interval).
+	TimerPollerInterval time.Duration
 }
 
 // TestSignals exposes signals used by tests to wait for scheduler activity.
@@ -57,19 +63,22 @@ type WorkflowScheduler struct {
 
 	TestSignals TestSignals
 
-	config *Config
-	exec   riverdriver.Executor
+	config    *Config
+	exec      riverdriver.Executor
+	progCache map[[32]byte]*programCacheEntry // CEL program cache; scheduler is single-goroutine
 }
 
 // New constructs a new WorkflowScheduler.
 func New(archetype *baseservice.Archetype, config *Config, exec riverdriver.Executor) *WorkflowScheduler {
 	return baseservice.Init(archetype, &WorkflowScheduler{
 		config: &Config{
-			BatchSize: cmp.Or(config.BatchSize, BatchSizeDefault),
-			Interval:  cmp.Or(config.Interval, IntervalDefault),
-			Schema:    config.Schema,
+			BatchSize:           cmp.Or(config.BatchSize, BatchSizeDefault),
+			Interval:            cmp.Or(config.Interval, IntervalDefault),
+			Schema:              config.Schema,
+			TimerPollerInterval: config.TimerPollerInterval,
 		},
-		exec: exec,
+		exec:      exec,
+		progCache: make(map[[32]byte]*programCacheEntry),
 	})
 }
 
@@ -89,7 +98,12 @@ func (s *WorkflowScheduler) Start(ctx context.Context) error {
 		s.Logger.DebugContext(ctx, s.Name+riversharedmaintenance.LogPrefixRunLoopStarted)
 		defer s.Logger.DebugContext(ctx, s.Name+riversharedmaintenance.LogPrefixRunLoopStopped)
 
-		ticker := timeutil.NewTickerWithInitialTick(ctx, s.config.Interval)
+		tickInterval := s.config.Interval
+		if s.config.TimerPollerInterval > 0 && s.config.TimerPollerInterval < tickInterval {
+			tickInterval = s.config.TimerPollerInterval
+		}
+
+		ticker := timeutil.NewTickerWithInitialTick(ctx, tickInterval)
 		for {
 			select {
 			case <-ctx.Done():
@@ -120,6 +134,25 @@ func (s *WorkflowScheduler) runOnce(ctx context.Context) error {
 		}
 	}
 
+	if err := s.promoteReady(ctx); err != nil {
+		return err
+	}
+
+	// Wait-evaluation pass: resolve timer/signal/dep-output conditions for
+	// tasks that carry a river:workflow_wait key.
+	if err := s.evaluateWaits(ctx, s.progCache); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.Logger.ErrorContext(ctx, s.Name+": Error evaluating workflow waits", slog.String("error", err.Error()))
+		}
+	}
+
+	return nil
+}
+
+// promoteReady loops until fewer than BatchSize rows are returned, promoting
+// pending workflow tasks whose deps have all completed. Extracted from runOnce
+// so evaluateWaits can be called after the promotion loop completes.
+func (s *WorkflowScheduler) promoteReady(ctx context.Context) error {
 	for {
 		// H3: Check outer context before each iteration so total runOnce time is
 		// bounded even when every individual per-iteration timeout is 30 s.
