@@ -208,6 +208,7 @@ type Executor interface {
 	JobDelete(ctx context.Context, params *JobDeleteParams) (*rivertype.JobRow, error)
 	JobDeleteBefore(ctx context.Context, params *JobDeleteBeforeParams) (int, error)
 	JobDeleteMany(ctx context.Context, params *JobDeleteManyParams) ([]*rivertype.JobRow, error)
+	JobApplyWorkflowWait(ctx context.Context, params *JobApplyWorkflowWaitParams) (*rivertype.JobRow, error)
 	JobGetAvailable(ctx context.Context, params *JobGetAvailableParams) ([]*rivertype.JobRow, error)
 	JobGetByID(ctx context.Context, params *JobGetByIDParams) (*rivertype.JobRow, error)
 	JobGetByIDMany(ctx context.Context, params *JobGetByIDManyParams) ([]*rivertype.JobRow, error)
@@ -448,6 +449,15 @@ type JobGetByIDManyParams struct {
 type JobGetByKindManyParams struct {
 	Kind   []string
 	Schema string
+}
+
+// JobApplyWorkflowWaitParams are parameters for applying a promote or cancel
+// outcome to a single pending workflow wait task.
+type JobApplyWorkflowWaitParams struct {
+	ID      int64
+	Now     time.Time
+	Outcome string // "promote" | "cancel"
+	Schema  string
 }
 
 type JobGetStuckParams struct {

@@ -56,6 +56,92 @@ func (q *Queries) JobApplyWorkflowReady(ctx context.Context, db DBTX, arg *JobAp
 	return &i, err
 }
 
+const jobApplyWorkflowWaitCancel = `-- name: JobApplyWorkflowWaitCancel :one
+UPDATE /* TEMPLATE: schema */river_job
+SET state        = 'cancelled',
+    finalized_at = cast(?1 AS text),
+    metadata     = json_set(metadata, '$."river:workflow_wait_failed_reason"', 'dependency failed')
+WHERE id = ?2
+  AND state = 'pending'
+RETURNING id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+`
+
+type JobApplyWorkflowWaitCancelParams struct {
+	Now string
+	ID  int64
+}
+
+// Cancels a single pending workflow wait task and sets river:workflow_wait_failed_reason.
+// No-op (returns 0 rows) if the row is not in state 'pending'.
+func (q *Queries) JobApplyWorkflowWaitCancel(ctx context.Context, db DBTX, arg *JobApplyWorkflowWaitCancelParams) (*RiverJob, error) {
+	row := db.QueryRowContext(ctx, jobApplyWorkflowWaitCancel, arg.Now, arg.ID)
+	var i RiverJob
+	err := row.Scan(
+		&i.ID,
+		&i.Args,
+		&i.Attempt,
+		&i.AttemptedAt,
+		&i.AttemptedBy,
+		&i.CreatedAt,
+		&i.Errors,
+		&i.FinalizedAt,
+		&i.Kind,
+		&i.MaxAttempts,
+		&i.Metadata,
+		&i.Priority,
+		&i.Queue,
+		&i.State,
+		&i.ScheduledAt,
+		&i.Tags,
+		&i.UniqueKey,
+		&i.UniqueStates,
+	)
+	return &i, err
+}
+
+const jobApplyWorkflowWaitPromote = `-- name: JobApplyWorkflowWaitPromote :one
+UPDATE /* TEMPLATE: schema */river_job
+SET state        = ?1,
+    metadata     = json_set(metadata, '$."river:workflow_wait_resolved_at"', cast(?2 AS text))
+WHERE id = ?3
+  AND state = 'pending'
+RETURNING id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+`
+
+type JobApplyWorkflowWaitPromoteParams struct {
+	NewState string
+	Now      string
+	ID       int64
+}
+
+// Promotes a single pending workflow wait task to the target state and sets river:workflow_wait_resolved_at.
+// No-op (returns 0 rows) if the row is not in state 'pending'.
+func (q *Queries) JobApplyWorkflowWaitPromote(ctx context.Context, db DBTX, arg *JobApplyWorkflowWaitPromoteParams) (*RiverJob, error) {
+	row := db.QueryRowContext(ctx, jobApplyWorkflowWaitPromote, arg.NewState, arg.Now, arg.ID)
+	var i RiverJob
+	err := row.Scan(
+		&i.ID,
+		&i.Args,
+		&i.Attempt,
+		&i.AttemptedAt,
+		&i.AttemptedBy,
+		&i.CreatedAt,
+		&i.Errors,
+		&i.FinalizedAt,
+		&i.Kind,
+		&i.MaxAttempts,
+		&i.Metadata,
+		&i.Priority,
+		&i.Queue,
+		&i.State,
+		&i.ScheduledAt,
+		&i.Tags,
+		&i.UniqueKey,
+		&i.UniqueStates,
+	)
+	return &i, err
+}
+
 const jobCancel = `-- name: JobCancel :one
 UPDATE /* TEMPLATE: schema */river_job
 SET

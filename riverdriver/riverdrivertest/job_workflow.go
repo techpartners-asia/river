@@ -249,6 +249,100 @@ func exerciseJobGetWorkflowTasks[TTx any](ctx context.Context, t *testing.T, exe
 	})
 }
 
+func exerciseJobApplyWorkflowWait[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
+	t.Helper()
+
+	setup := func(ctx context.Context, t *testing.T) riverdriver.Executor {
+		t.Helper()
+		exec, _ := executorWithTx(ctx, t)
+		return exec
+	}
+
+	t.Run("JobApplyWorkflowWait", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("PromotePastScheduledAt_BecomesAvailable", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			waitJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID:  "wf-wait-promote-past",
+				TaskName:    "w1",
+				State:       rivertype.JobStatePending,
+				ScheduledAt: now.Add(-time.Hour), // scheduled in the past
+				Wait:        json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      waitJob.ID,
+				Outcome: "promote",
+				Now:     now,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.Equal(t, rivertype.JobStateAvailable, row.State)
+
+			var meta map[string]any
+			require.NoError(t, json.Unmarshal(row.Metadata, &meta))
+			require.Contains(t, meta, rivercommon.MetadataKeyWorkflowWaitResolvedAt, "resolved_at must be set on promote")
+		})
+
+		t.Run("PromoteFutureScheduledAt_BecomesScheduled", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			waitJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID:  "wf-wait-promote-future",
+				TaskName:    "w2",
+				State:       rivertype.JobStatePending,
+				ScheduledAt: now.Add(time.Hour), // scheduled in the future
+				Wait:        json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      waitJob.ID,
+				Outcome: "promote",
+				Now:     now,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.Equal(t, rivertype.JobStateScheduled, row.State)
+		})
+
+		t.Run("Cancel_BecomesCancelledWithFinalizedAt", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			waitJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: "wf-wait-cancel",
+				TaskName:   "w3",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      waitJob.ID,
+				Outcome: "cancel",
+				Now:     now,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.Equal(t, rivertype.JobStateCancelled, row.State)
+			require.NotNil(t, row.FinalizedAt)
+
+			var meta map[string]any
+			require.NoError(t, json.Unmarshal(row.Metadata, &meta))
+			require.Contains(t, meta, rivercommon.MetadataKeyWorkflowWaitFailedReason, "failed_reason must be set on cancel")
+		})
+	})
+}
+
 func exerciseJobUpdateWorkflowReady[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
 	t.Helper()
 

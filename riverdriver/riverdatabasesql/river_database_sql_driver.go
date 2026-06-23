@@ -312,6 +312,18 @@ func (e *Executor) JobDeleteMany(ctx context.Context, params *riverdriver.JobDel
 	return sliceutil.MapError(jobs, jobRowFromInternal)
 }
 
+func (e *Executor) JobApplyWorkflowWait(ctx context.Context, params *riverdriver.JobApplyWorkflowWaitParams) (*rivertype.JobRow, error) {
+	job, err := dbsqlc.New().JobApplyWorkflowWait(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobApplyWorkflowWaitParams{
+		ID:      params.ID,
+		Outcome: params.Outcome,
+		Now:     params.Now,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return jobRowFromInternal(job)
+}
+
 func (e *Executor) JobGetAvailable(ctx context.Context, params *riverdriver.JobGetAvailableParams) ([]*rivertype.JobRow, error) {
 	jobs, err := dbsqlc.New().JobGetAvailable(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetAvailableParams{
 		AttemptedBy:    params.ClientID,

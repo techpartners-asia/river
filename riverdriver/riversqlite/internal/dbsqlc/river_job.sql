@@ -632,3 +632,24 @@ SET state = CASE
 WHERE json_extract(metadata, '$."river:workflow_id"') = cast(@workflow_id AS text)
   AND state IN (sqlc.slice('target_states'))
 RETURNING *;
+
+-- Cancels a single pending workflow wait task and sets river:workflow_wait_failed_reason.
+-- No-op (returns 0 rows) if the row is not in state 'pending'.
+-- name: JobApplyWorkflowWaitCancel :one
+UPDATE /* TEMPLATE: schema */river_job
+SET state        = 'cancelled',
+    finalized_at = cast(@now AS text),
+    metadata     = json_set(metadata, '$."river:workflow_wait_failed_reason"', 'dependency failed')
+WHERE id = @id
+  AND state = 'pending'
+RETURNING *;
+
+-- Promotes a single pending workflow wait task to the target state and sets river:workflow_wait_resolved_at.
+-- No-op (returns 0 rows) if the row is not in state 'pending'.
+-- name: JobApplyWorkflowWaitPromote :one
+UPDATE /* TEMPLATE: schema */river_job
+SET state        = @new_state,
+    metadata     = json_set(metadata, '$."river:workflow_wait_resolved_at"', cast(@now AS text))
+WHERE id = @id
+  AND state = 'pending'
+RETURNING *;

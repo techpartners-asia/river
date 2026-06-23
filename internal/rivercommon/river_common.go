@@ -73,6 +73,14 @@ const (
 
 	// MetadataKeyWorkflowTask is the unique-within-workflow task name.
 	MetadataKeyWorkflowTask = "river:workflow_task"
+
+	// MetadataKeyWorkflowWaitResolvedAt records the RFC3339 timestamp at which
+	// a workflow wait condition was resolved (i.e. the task was promoted).
+	MetadataKeyWorkflowWaitResolvedAt = "river:workflow_wait_resolved_at"
+
+	// MetadataKeyWorkflowWaitFailedReason records the reason a workflow wait
+	// task was cancelled (e.g. "dependency failed").
+	MetadataKeyWorkflowWaitFailedReason = "river:workflow_wait_failed_reason"
 )
 
 type ContextKeyClient struct{}

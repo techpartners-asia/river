@@ -13,6 +13,61 @@ import (
 	"github.com/lib/pq"
 )
 
+const jobApplyWorkflowWait = `-- name: JobApplyWorkflowWait :one
+UPDATE /* TEMPLATE: schema */river_job
+SET
+  state = CASE
+    WHEN $1::text = 'cancel' THEN 'cancelled'::/* TEMPLATE: schema */river_job_state
+    WHEN scheduled_at > $2::timestamptz THEN 'scheduled'::/* TEMPLATE: schema */river_job_state
+    ELSE 'available'::/* TEMPLATE: schema */river_job_state
+  END,
+  finalized_at = CASE WHEN $1::text = 'cancel' THEN $2::timestamptz ELSE finalized_at END,
+  metadata = CASE
+    WHEN $1::text = 'cancel'
+      THEN jsonb_set(metadata, '{river:workflow_wait_failed_reason}'::text[], to_jsonb('dependency failed'::text), true)
+    ELSE jsonb_set(metadata, '{river:workflow_wait_resolved_at}'::text[], to_jsonb($2::timestamptz), true)
+  END
+WHERE id = $3::bigint
+  AND state = 'pending'::/* TEMPLATE: schema */river_job_state
+RETURNING id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+`
+
+type JobApplyWorkflowWaitParams struct {
+	Outcome string
+	Now     time.Time
+	ID      int64
+}
+
+// Promotes or cancels a single pending workflow wait task.
+// promote: state → scheduled (if scheduled_at > now) else available; sets river:workflow_wait_resolved_at.
+// cancel:  state → cancelled, finalized_at = now; sets river:workflow_wait_failed_reason.
+// No-op (returns 0 rows) if the row is not in state 'pending'.
+func (q *Queries) JobApplyWorkflowWait(ctx context.Context, db DBTX, arg *JobApplyWorkflowWaitParams) (*RiverJob, error) {
+	row := db.QueryRowContext(ctx, jobApplyWorkflowWait, arg.Outcome, arg.Now, arg.ID)
+	var i RiverJob
+	err := row.Scan(
+		&i.ID,
+		&i.Args,
+		&i.Attempt,
+		&i.AttemptedAt,
+		pq.Array(&i.AttemptedBy),
+		&i.CreatedAt,
+		pq.Array(&i.Errors),
+		&i.FinalizedAt,
+		&i.Kind,
+		&i.MaxAttempts,
+		&i.Metadata,
+		&i.Priority,
+		&i.Queue,
+		&i.State,
+		&i.ScheduledAt,
+		pq.Array(&i.Tags),
+		&i.UniqueKey,
+		&i.UniqueStates,
+	)
+	return &i, err
+}
+
 const jobCancel = `-- name: JobCancel :one
 WITH locked_job AS (
     SELECT
