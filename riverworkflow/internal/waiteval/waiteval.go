@@ -57,6 +57,21 @@ type compiledTerm struct {
 	subProg cel.Program // nil for timer terms
 }
 
+// TermReport captures the evaluation result of a single wait term.
+type TermReport struct {
+	Name   string
+	Kind   string
+	Result bool
+	Detail string // short human-readable note, best-effort
+}
+
+// EvalReport captures the full evaluation result: per-term results and the
+// top-level expression result.
+type EvalReport struct {
+	ExprResult bool
+	Terms      []TermReport
+}
+
 // Program holds all compiled CEL programs for a WaitSpec.
 type Program struct {
 	terms   []compiledTerm
@@ -222,9 +237,14 @@ func Compile(terms []TermData, expr string) (*Program, error) {
 	}, nil
 }
 
-// Evaluate evaluates all terms against in and then evaluates the top-level
-// expression with the term results. It is pure: no IO, no time.Now().
-func (p *Program) Evaluate(in Inputs) (bool, error) {
+// EvaluateReport evaluates all terms against in and then evaluates the
+// top-level expression with the term results, capturing each term's result in
+// an EvalReport. It is pure: no IO, no time.Now().
+//
+// The not-ready→false contract is preserved: runtime eval errors on individual
+// terms produce Result=false (not an error return). Non-bool top-level output
+// is still returned as an error.
+func (p *Program) EvaluateReport(in Inputs) (EvalReport, error) {
 	// Default nil maps to empty to avoid activation key-missing errors.
 	sigViews := in.Signals
 	if sigViews == nil {
@@ -265,25 +285,35 @@ func (p *Program) Evaluate(in Inputs) (bool, error) {
 		"workflow": workflow,
 	}
 
-	// Evaluate each term.
+	// Evaluate each term, capturing per-term results.
 	termValues := make(map[string]bool, len(p.terms))
+	termReports := make([]TermReport, 0, len(p.terms))
+
 	for _, ct := range p.terms {
 		var val bool
+		var detail string
 
 		switch ct.data.Kind {
 		case "timer":
 			// Value comes directly from the pre-computed timer state.
 			val = timers[ct.data.Name]
+			if val {
+				detail = "timer fired"
+			} else {
+				detail = "timer not fired"
+			}
 
 		case "signal":
 			// Absence of the signal key means the signal has not yet been received.
 			sv, present := sigViews[ct.data.Key]
 			if !present {
 				val = false
+				detail = "signal absent"
 			} else if ct.subProg == nil {
 				// A signal term with an empty CELExpr gates on signal presence alone,
 				// independent of the payload.
 				val = true
+				detail = "signal present"
 			} else {
 				// Bind full signal metadata into the sub-environment.
 				// created_at is passed as time.Time; cel-go's default adapter maps
@@ -297,24 +327,33 @@ func (p *Program) Evaluate(in Inputs) (bool, error) {
 				}
 				result, err := evalBool(ct.subProg, sigActivation)
 				if err != nil {
-					return false, fmt.Errorf("waiteval: signal term %q: %w", ct.data.Name, err)
+					return EvalReport{}, fmt.Errorf("waiteval: signal term %q: %w", ct.data.Name, err)
 				}
 				val = result
+				detail = fmt.Sprintf("signal present; CEL=%v", val)
 			}
 
 		case "generic":
 			if ct.subProg == nil {
 				val = false
+				detail = "generic: no CEL expr"
 			} else {
 				result, err := evalBool(ct.subProg, baseActivation)
 				if err != nil {
-					return false, fmt.Errorf("waiteval: generic term %q: %w", ct.data.Name, err)
+					return EvalReport{}, fmt.Errorf("waiteval: generic term %q: %w", ct.data.Name, err)
 				}
 				val = result
+				detail = fmt.Sprintf("generic CEL=%v", val)
 			}
 		}
 
 		termValues[ct.data.Name] = val
+		termReports = append(termReports, TermReport{
+			Name:   ct.data.Name,
+			Kind:   ct.data.Kind,
+			Result: val,
+			Detail: detail,
+		})
 	}
 
 	// Build top-level activation: term name booleans + scope maps.
@@ -328,5 +367,21 @@ func (p *Program) Evaluate(in Inputs) (bool, error) {
 		topActivation[name] = val
 	}
 
-	return evalBool(p.topProg, topActivation)
+	exprResult, err := evalBool(p.topProg, topActivation)
+	if err != nil {
+		return EvalReport{}, err
+	}
+
+	return EvalReport{
+		ExprResult: exprResult,
+		Terms:      termReports,
+	}, nil
+}
+
+// Evaluate evaluates all terms against in and then evaluates the top-level
+// expression with the term results. It is pure: no IO, no time.Now().
+// It delegates to EvaluateReport and returns only the top-level bool result.
+func (p *Program) Evaluate(in Inputs) (bool, error) {
+	r, err := p.EvaluateReport(in)
+	return r.ExprResult, err
 }

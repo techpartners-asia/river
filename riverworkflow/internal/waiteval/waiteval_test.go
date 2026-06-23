@@ -207,6 +207,45 @@ func TestSignalTermUsesAttemptAndSource(t *testing.T) {
 	}
 }
 
+// TestEvaluateReportPerTerm verifies that EvaluateReport captures per-term
+// bool results alongside the top-level expression result.
+func TestEvaluateReportPerTerm(t *testing.T) {
+	p, err := Compile([]TermData{
+		{Name: "t", Kind: "timer", HasTimer: true},
+		{Name: "s", Kind: "signal", Key: "k", CELExpr: "payload.ok"},
+	}, "t || s")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	// Timer fired, signal absent.
+	report, err := p.EvaluateReport(Inputs{
+		Timers:  map[string]bool{"t": true},
+		Signals: map[string]SignalView{},
+	})
+	if err != nil {
+		t.Fatalf("EvaluateReport: %v", err)
+	}
+	if !report.ExprResult {
+		t.Fatalf("ExprResult: want true; got false")
+	}
+	if len(report.Terms) != 2 {
+		t.Fatalf("Terms length: want 2; got %d", len(report.Terms))
+	}
+
+	// Assert per-term results by name.
+	byName := make(map[string]TermReport, len(report.Terms))
+	for _, tr := range report.Terms {
+		byName[tr.Name] = tr
+	}
+	if tr, ok := byName["t"]; !ok || !tr.Result {
+		t.Fatalf("term 't': want Result=true; got %+v", byName["t"])
+	}
+	if tr, ok := byName["s"]; !ok || tr.Result {
+		t.Fatalf("term 's': want Result=false (signal absent); got %+v", byName["s"])
+	}
+}
+
 // TestSignalTermCreatedAtIsTimestamp verifies that created_at is exposed as a
 // CEL timestamp and can be compared with timestamp literals.
 func TestSignalTermCreatedAtIsTimestamp(t *testing.T) {
