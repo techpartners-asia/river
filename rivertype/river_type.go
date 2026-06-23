@@ -22,6 +22,11 @@ var ErrNotFound = errors.New("not found")
 // running.
 var ErrJobRunning = errors.New("running jobs cannot be deleted")
 
+// ErrWorkflowSignalPayloadMismatch is returned from WorkflowSignalEmit when an
+// idempotency key is reused but the new payload differs from the one that was
+// stored on the first emit.
+var ErrWorkflowSignalPayloadMismatch = errors.New("riverworkflow: signal idempotency key reused with a different payload")
+
 // JobArgs is an interface that should be implemented by the arguments to a job.
 // This definition duplicates the JobArgs interface in the river package so that
 // it can be used in other packages without creating a circular dependency.
@@ -499,6 +504,37 @@ type DurablePeriodicJob struct {
 // (returned by the use of `Client.PeriodicJobs().Add()`) which can be used to
 // subsequently remove the periodic job with `Remove()`.
 type PeriodicJobHandle int
+
+// WorkflowSignal represents a signal emitted to a workflow.
+type WorkflowSignal struct {
+	// ID is the unique identifier for the signal row.
+	ID int64
+
+	// WorkflowID is the workflow that this signal is addressed to.
+	WorkflowID string
+
+	// SignalKey is the name/type of the signal.
+	SignalKey string
+
+	// Payload is an arbitrary JSON payload attached to the signal.
+	Payload []byte
+
+	// IdempotencyKey is an optional key used to deduplicate signals. When
+	// set, a second emit with the same (workflow_id, idempotency_key) pair and
+	// an identical payload is a no-op; a differing payload returns
+	// ErrWorkflowSignalPayloadMismatch.
+	IdempotencyKey *string
+
+	// Source is an optional label indicating which system or process emitted
+	// the signal.
+	Source *string
+
+	// CreatedAt is when the signal was first persisted.
+	CreatedAt time.Time
+
+	// ResolvedAt is when the signal was resolved (consumed), if ever.
+	ResolvedAt *time.Time
+}
 
 // Queue is a configuration for a queue that is currently (or recently was) in
 // use by a client.

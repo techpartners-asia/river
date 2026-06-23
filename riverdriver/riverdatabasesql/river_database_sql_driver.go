@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"reflect"
 	"strings"
 	"time"
 
@@ -1174,6 +1175,89 @@ func (e *Executor) TableTruncate(ctx context.Context, params *riverdriver.TableT
 		),
 	)
 	return interpretError(err)
+}
+
+func (e *Executor) WorkflowSignalEmit(ctx context.Context, params *riverdriver.WorkflowSignalEmitParams) (*rivertype.WorkflowSignal, error) {
+	payload := params.Payload
+	if payload == nil {
+		payload = []byte("{}")
+	}
+	row, err := dbsqlc.New().WorkflowSignalEmit(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.WorkflowSignalEmitParams{
+		WorkflowID:     params.WorkflowID,
+		SignalKey:      params.SignalKey,
+		Payload:        string(payload),
+		IdempotencyKey: sql.NullString{String: ptrutil.ValOrDefault(params.IdempotencyKey, ""), Valid: params.IdempotencyKey != nil},
+		Source:         sql.NullString{String: ptrutil.ValOrDefault(params.Source, ""), Valid: params.Source != nil},
+		Now:            params.Now,
+	})
+	if err != nil {
+		// ON CONFLICT DO NOTHING returns no row → ErrNotFound; resolve idempotency.
+		if params.IdempotencyKey != nil && errors.Is(interpretError(err), rivertype.ErrNotFound) {
+			existing, err2 := dbsqlc.New().WorkflowSignalGetByIdempotency(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.WorkflowSignalGetByIdempotencyParams{
+				WorkflowID:     params.WorkflowID,
+				IdempotencyKey: sql.NullString{String: *params.IdempotencyKey, Valid: true},
+			})
+			if err2 != nil {
+				return nil, interpretError(err2)
+			}
+			if !payloadsEqual(payload, []byte(existing.Payload)) {
+				return nil, rivertype.ErrWorkflowSignalPayloadMismatch
+			}
+			return workflowSignalFromInternal(existing), nil
+		}
+		return nil, interpretError(err)
+	}
+	return workflowSignalFromInternal(row), nil
+}
+
+func (e *Executor) WorkflowSignalList(ctx context.Context, params *riverdriver.WorkflowSignalListParams) ([]*rivertype.WorkflowSignal, error) {
+	rows, err := dbsqlc.New().WorkflowSignalList(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.WorkflowSignalListParams{
+		WorkflowID: params.WorkflowID,
+		SignalKey:  sql.NullString{String: ptrutil.ValOrDefault(params.SignalKey, ""), Valid: params.SignalKey != nil},
+		Max:        int32(params.Max),
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.Map(rows, workflowSignalFromInternal), nil
+}
+
+func workflowSignalFromInternal(internal *dbsqlc.RiverWorkflowSignal) *rivertype.WorkflowSignal {
+	sig := &rivertype.WorkflowSignal{
+		ID:         internal.ID,
+		WorkflowID: internal.WorkflowID,
+		SignalKey:  internal.SignalKey,
+		Payload:    []byte(internal.Payload),
+		CreatedAt:  internal.CreatedAt,
+		ResolvedAt: internal.ResolvedAt,
+	}
+	if internal.IdempotencyKey.Valid {
+		sig.IdempotencyKey = &internal.IdempotencyKey.String
+	}
+	if internal.Source.Valid {
+		sig.Source = &internal.Source.String
+	}
+	return sig
+}
+
+// payloadsEqual compares two JSON payloads for semantic equality, normalizing
+// via unmarshal to handle whitespace and key-ordering differences introduced by
+// Postgres jsonb storage.
+func payloadsEqual(a, b []byte) bool {
+	if len(a) == 0 {
+		a = []byte("{}")
+	}
+	if len(b) == 0 {
+		b = []byte("{}")
+	}
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(av, bv)
 }
 
 type ExecutorTx struct {

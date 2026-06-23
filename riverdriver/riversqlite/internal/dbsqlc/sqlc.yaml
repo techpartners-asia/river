@@ -9,6 +9,7 @@ sql:
       - river_migration.sql
       - river_periodic_job.sql
       - river_queue.sql
+      - river_workflow_signal.sql
       - schema.sql
     schema:
       - river_client.sql
@@ -18,6 +19,7 @@ sql:
       - river_migration.sql
       - river_periodic_job.sql
       - river_queue.sql
+      - river_workflow_signal.sql
       - schema.sql
     gen:
       go:

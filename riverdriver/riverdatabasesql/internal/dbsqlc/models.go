@@ -5,6 +5,7 @@
 package dbsqlc
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"time"
@@ -124,4 +125,15 @@ type RiverQueue struct {
 	Metadata  string
 	PausedAt  *time.Time
 	UpdatedAt time.Time
+}
+
+type RiverWorkflowSignal struct {
+	ID             int64
+	WorkflowID     string
+	SignalKey      string
+	Payload        string
+	IdempotencyKey sql.NullString
+	Source         sql.NullString
+	CreatedAt      time.Time
+	ResolvedAt     *time.Time
 }

@@ -295,6 +295,18 @@ type Executor interface {
 	// search schema.
 	TableExists(ctx context.Context, params *TableExistsParams) (bool, error)
 	TableTruncate(ctx context.Context, params *TableTruncateParams) error
+
+	// WorkflowSignalEmit emits a signal to a workflow. If IdempotencyKey is
+	// set and a row with the same (workflow_id, idempotency_key) already
+	// exists, the behaviour depends on the payload:
+	//   - identical payload → returns the existing row (idempotent no-op)
+	//   - different payload → returns ErrWorkflowSignalPayloadMismatch
+	WorkflowSignalEmit(ctx context.Context, params *WorkflowSignalEmitParams) (*rivertype.WorkflowSignal, error)
+
+	// WorkflowSignalList returns signals for the given workflow, ordered by
+	// (created_at, id). Pass a non-nil SignalKey to filter to a specific signal
+	// type. Max caps the number of returned rows.
+	WorkflowSignalList(ctx context.Context, params *WorkflowSignalListParams) ([]*rivertype.WorkflowSignal, error)
 }
 
 // ExecutorTx is an executor which is a transaction. In addition to standard
@@ -974,6 +986,47 @@ type TableExistsParams struct {
 type TableTruncateParams struct {
 	Schema string
 	Table  []string
+}
+
+// WorkflowSignalEmitParams are parameters for emitting a signal to a workflow.
+type WorkflowSignalEmitParams struct {
+	// WorkflowID is the workflow the signal is addressed to.
+	WorkflowID string
+
+	// SignalKey is the name/type of the signal.
+	SignalKey string
+
+	// Payload is the JSON payload to attach to the signal. Must be valid JSON.
+	// Pass nil or []byte("{}") for an empty payload.
+	Payload []byte
+
+	// IdempotencyKey is an optional deduplication key scoped to (WorkflowID,
+	// IdempotencyKey). A nil value disables idempotency (always inserts).
+	IdempotencyKey *string
+
+	// Source is an optional label for the emitting system.
+	Source *string
+
+	// Now is the timestamp to use for created_at. Callers should pass time.Now().
+	Now time.Time
+
+	// Schema is the database schema to use. Empty means the default schema.
+	Schema string
+}
+
+// WorkflowSignalListParams are parameters for listing workflow signals.
+type WorkflowSignalListParams struct {
+	// WorkflowID is the workflow whose signals to list.
+	WorkflowID string
+
+	// SignalKey optionally filters to a specific signal type.
+	SignalKey *string
+
+	// Max is the maximum number of rows to return.
+	Max int
+
+	// Schema is the database schema to use. Empty means the default schema.
+	Schema string
 }
 
 // MigrationLineMainTruncateTables is a shared helper that produces tables to
