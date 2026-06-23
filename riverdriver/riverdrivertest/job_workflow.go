@@ -311,6 +311,37 @@ func exerciseJobApplyWorkflowWait[TTx any](ctx context.Context, t *testing.T, ex
 			require.NoError(t, err)
 			require.NotNil(t, row)
 			require.Equal(t, rivertype.JobStateScheduled, row.State)
+
+			var meta map[string]any
+			require.NoError(t, json.Unmarshal(row.Metadata, &meta))
+			require.Contains(t, meta, rivercommon.MetadataKeyWorkflowWaitResolvedAt, "resolved_at must be set on promote")
+		})
+
+		t.Run("UnknownOutcome_ReturnsError", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			waitJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: "wf-wait-unknown-outcome",
+				TaskName:   "w5",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      waitJob.ID,
+				Outcome: "bogus",
+				Now:     now,
+			})
+			require.Error(t, err, "unknown outcome must return an error")
+			require.Nil(t, row)
+
+			// Confirm the row is unchanged — still pending.
+			unchanged, err := exec.JobGetByID(ctx, &riverdriver.JobGetByIDParams{ID: waitJob.ID})
+			require.NoError(t, err)
+			require.Equal(t, rivertype.JobStatePending, unchanged.State)
 		})
 
 		t.Run("Cancel_BecomesCancelledWithFinalizedAt", func(t *testing.T) {

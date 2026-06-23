@@ -476,6 +476,9 @@ var jobGetAvailableAttemptedBySQL = strings.TrimSpace(`
 `)
 
 func (e *Executor) JobApplyWorkflowWait(ctx context.Context, params *riverdriver.JobApplyWorkflowWaitParams) (*rivertype.JobRow, error) {
+	if params.Outcome != "promote" && params.Outcome != "cancel" {
+		return nil, fmt.Errorf("riverdriver: JobApplyWorkflowWait: unknown outcome %q (must be \"promote\" or \"cancel\")", params.Outcome)
+	}
 	return dbutil.WithTxV(ctx, e, func(ctx context.Context, execTx riverdriver.ExecutorTx) (*rivertype.JobRow, error) {
 		dbtx := templateReplaceWrapper{dbtx: e.driver.UnwrapTx(execTx), replacer: &e.driver.replacer}
 		queries := dbsqlc.New()

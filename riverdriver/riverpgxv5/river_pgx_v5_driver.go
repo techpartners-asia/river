@@ -316,6 +316,9 @@ func (e *Executor) JobDeleteMany(ctx context.Context, params *riverdriver.JobDel
 }
 
 func (e *Executor) JobApplyWorkflowWait(ctx context.Context, params *riverdriver.JobApplyWorkflowWaitParams) (*rivertype.JobRow, error) {
+	if params.Outcome != "promote" && params.Outcome != "cancel" {
+		return nil, fmt.Errorf("riverdriver: JobApplyWorkflowWait: unknown outcome %q (must be \"promote\" or \"cancel\")", params.Outcome)
+	}
 	job, err := dbsqlc.New().JobApplyWorkflowWait(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobApplyWorkflowWaitParams{
 		ID:      params.ID,
 		Outcome: params.Outcome,
