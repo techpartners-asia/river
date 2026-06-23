@@ -1,6 +1,9 @@
 package waiteval
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestCompileRejectsBadSyntax(t *testing.T) {
 	_, err := Compile([]TermData{{Name: "a", Kind: "generic", CELExpr: "1 +"}}, "a")
@@ -29,11 +32,13 @@ func TestSignalTermAbsentIsFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	got, err := p.Evaluate(Inputs{Signals: map[string]any{}})
+	got, err := p.Evaluate(Inputs{Signals: map[string]SignalView{}})
 	if err != nil || got {
 		t.Fatalf("absent signal must be false; got %v,%v", got, err)
 	}
-	got, err = p.Evaluate(Inputs{Signals: map[string]any{"approved": map[string]any{"ok": true}}})
+	got, err = p.Evaluate(Inputs{Signals: map[string]SignalView{
+		"approved": {Payload: map[string]any{"ok": true}},
+	}})
 	if err != nil || !got {
 		t.Fatalf("present matching signal must be true; got %v,%v", got, err)
 	}
@@ -58,7 +63,7 @@ func TestExprCombinesTerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	got, _ := p.Evaluate(Inputs{Timers: map[string]bool{"t": true}, Signals: map[string]any{}})
+	got, _ := p.Evaluate(Inputs{Timers: map[string]bool{"t": true}, Signals: map[string]SignalView{}})
 	if !got {
 		t.Fatal("t||s with t fired must be true")
 	}
@@ -70,12 +75,12 @@ func TestSignalTermEmptyCELExprGatesOnPresence(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	// Absent → false.
-	got, err := p.Evaluate(Inputs{Signals: map[string]any{}})
+	got, err := p.Evaluate(Inputs{Signals: map[string]SignalView{}})
 	if err != nil || got {
 		t.Fatalf("absent signal must be false; got %v,%v", got, err)
 	}
 	// Present (any payload, even nil) → true, on presence alone.
-	got, err = p.Evaluate(Inputs{Signals: map[string]any{"ping": nil}})
+	got, err = p.Evaluate(Inputs{Signals: map[string]SignalView{"ping": {Payload: nil}}})
 	if err != nil || !got {
 		t.Fatalf("present signal with empty CELExpr must be true; got %v,%v", got, err)
 	}
@@ -108,7 +113,7 @@ func TestEvaluateAbsentSignalInTopExprIsFalse(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	// Evaluate with empty Signals — "k" is absent.
-	got, err := p.Evaluate(Inputs{Signals: map[string]any{}})
+	got, err := p.Evaluate(Inputs{Signals: map[string]SignalView{}})
 	if err != nil {
 		t.Fatalf("absent signal key must return false,nil; got error: %v", err)
 	}
@@ -126,11 +131,93 @@ func TestEvaluateScalarPayloadIsFalse(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	// Signal "k" is present but its payload is a scalar string, not a map.
-	got, err := p.Evaluate(Inputs{Signals: map[string]any{"k": "hi"}})
+	got, err := p.Evaluate(Inputs{Signals: map[string]SignalView{"k": {Payload: "hi"}}})
 	if err != nil {
 		t.Fatalf("scalar payload must return false,nil; got error: %v", err)
 	}
 	if got {
 		t.Fatal("scalar payload must return false, not true")
+	}
+}
+
+// TestSignalTermUsesAttemptAndSource verifies that signal sub-expressions can
+// reference the full signal metadata: payload fields, attempt count, and source.
+func TestSignalTermUsesAttemptAndSource(t *testing.T) {
+	p, err := Compile([]TermData{{
+		Name:    "ok",
+		Kind:    "signal",
+		Key:     "approved",
+		CELExpr: `payload.ok && attempt > 0 && source == "api"`,
+	}}, "ok")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	// All conditions met → true.
+	got, err := p.Evaluate(Inputs{Signals: map[string]SignalView{
+		"approved": {
+			Payload: map[string]any{"ok": true},
+			Attempt: 1,
+			Source:  "api",
+		},
+	}})
+	if err != nil || !got {
+		t.Fatalf("all conditions met: want true,nil; got %v,%v", got, err)
+	}
+
+	// attempt == 0 → false (attempt > 0 fails).
+	got, err = p.Evaluate(Inputs{Signals: map[string]SignalView{
+		"approved": {
+			Payload: map[string]any{"ok": true},
+			Attempt: 0,
+			Source:  "api",
+		},
+	}})
+	if err != nil || got {
+		t.Fatalf("attempt==0: want false,nil; got %v,%v", got, err)
+	}
+
+	// source == "web" → false (source != "api").
+	got, err = p.Evaluate(Inputs{Signals: map[string]SignalView{
+		"approved": {
+			Payload: map[string]any{"ok": true},
+			Attempt: 1,
+			Source:  "web",
+		},
+	}})
+	if err != nil || got {
+		t.Fatalf("source=web: want false,nil; got %v,%v", got, err)
+	}
+}
+
+// TestSignalTermCreatedAtIsTimestamp verifies that created_at is exposed as a
+// CEL timestamp and can be compared with timestamp literals.
+func TestSignalTermCreatedAtIsTimestamp(t *testing.T) {
+	p, err := Compile([]TermData{{
+		Name:    "ok",
+		Kind:    "signal",
+		Key:     "ping",
+		CELExpr: `created_at > timestamp("2020-01-01T00:00:00Z")`,
+	}}, "ok")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	// CreatedAt is after 2020 → true.
+	ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	got, err := p.Evaluate(Inputs{Signals: map[string]SignalView{
+		"ping": {CreatedAt: ts},
+	}})
+	if err != nil || !got {
+		t.Fatalf("created_at after 2020: want true,nil; got %v,%v", got, err)
+	}
+
+	// CreatedAt is before 2020 → false.
+	tsOld := time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
+	got, err = p.Evaluate(Inputs{Signals: map[string]SignalView{
+		"ping": {CreatedAt: tsOld},
+	}})
+	if err != nil || got {
+		t.Fatalf("created_at before 2020: want false,nil; got %v,%v", got, err)
 	}
 }
