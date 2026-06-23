@@ -80,3 +80,57 @@ func TestSignalTermEmptyCELExprGatesOnPresence(t *testing.T) {
 		t.Fatalf("present signal with empty CELExpr must be true; got %v,%v", got, err)
 	}
 }
+
+// TestEvaluateAbsentDepKeyIsFalse verifies that a generic term referencing a
+// dep that is not in Inputs.Deps returns (false, nil) — "not yet satisfied" —
+// rather than propagating the CEL "no such key" runtime error.
+func TestEvaluateAbsentDepKeyIsFalse(t *testing.T) {
+	p, err := Compile([]TermData{{Name: "big", Kind: "generic", CELExpr: `deps["x"].output.n > 5`}}, "big")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// Evaluate with empty Deps — "x" is absent.
+	got, err := p.Evaluate(Inputs{Deps: map[string]DepView{}})
+	if err != nil {
+		t.Fatalf("absent dep key must return false,nil; got error: %v", err)
+	}
+	if got {
+		t.Fatal("absent dep key must return false, not true")
+	}
+}
+
+// TestEvaluateAbsentSignalInTopExprIsFalse verifies that a top-level expr
+// directly accessing signals["k"] where "k" is absent returns (false, nil).
+func TestEvaluateAbsentSignalInTopExprIsFalse(t *testing.T) {
+	// A generic term that directly accesses signals["k"].ok in the top-level expr.
+	p, err := Compile([]TermData{{Name: "s", Kind: "generic", CELExpr: `signals["k"].ok`}}, "s")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// Evaluate with empty Signals — "k" is absent.
+	got, err := p.Evaluate(Inputs{Signals: map[string]any{}})
+	if err != nil {
+		t.Fatalf("absent signal key must return false,nil; got error: %v", err)
+	}
+	if got {
+		t.Fatal("absent signal key must return false, not true")
+	}
+}
+
+// TestEvaluateScalarPayloadIsFalse verifies that a signal term with a scalar
+// payload (e.g. a plain string) evaluated against payload.ok returns (false, nil)
+// rather than propagating a CEL field-access-on-scalar runtime error.
+func TestEvaluateScalarPayloadIsFalse(t *testing.T) {
+	p, err := Compile([]TermData{{Name: "ok", Kind: "signal", Key: "k", CELExpr: "payload.ok"}}, "ok")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// Signal "k" is present but its payload is a scalar string, not a map.
+	got, err := p.Evaluate(Inputs{Signals: map[string]any{"k": "hi"}})
+	if err != nil {
+		t.Fatalf("scalar payload must return false,nil; got error: %v", err)
+	}
+	if got {
+		t.Fatal("scalar payload must return false, not true")
+	}
+}

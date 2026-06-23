@@ -237,18 +237,32 @@ func (s *WorkflowScheduler) processWaitTask(
 		}
 	}
 
-	// Build dep views from sibling outputs.
-	for name, sib := range siblings {
-		var sibMeta map[string]json.RawMessage
-		var output any
-		if err := json.Unmarshal(sib.Metadata, &sibMeta); err == nil {
-			if rawOut, ok := sibMeta[rivertype.MetadataKeyOutput]; ok {
-				_ = json.Unmarshal(rawOut, &output)
+	// Build dep views from declared deps. Every declared dep name gets an entry
+	// so that CEL expressions like deps["x"].output.field resolve without a
+	// "no such key" runtime error. Completed siblings get their output and state
+	// populated; absent or not-yet-complete siblings get Output: nil and State: "".
+	// Part A (evalBool) provides the backstop for .output.field access on a nil
+	// output: such a runtime error is treated as "not yet satisfied" (false).
+	for _, depName := range deps {
+		if sib, ok := siblings[depName]; ok {
+			var sibMeta map[string]json.RawMessage
+			var output any
+			if err := json.Unmarshal(sib.Metadata, &sibMeta); err == nil {
+				if rawOut, ok := sibMeta[rivertype.MetadataKeyOutput]; ok {
+					_ = json.Unmarshal(rawOut, &output)
+				}
 			}
-		}
-		inputs.Deps[name] = waiteval.DepView{
-			Output: output,
-			State:  string(sib.State),
+			inputs.Deps[depName] = waiteval.DepView{
+				Output: output,
+				State:  string(sib.State),
+			}
+		} else {
+			// Sibling not present yet — provide an empty placeholder so CEL map
+			// key access does not raise "no such key".
+			inputs.Deps[depName] = waiteval.DepView{
+				Output: nil,
+				State:  "",
+			}
 		}
 	}
 

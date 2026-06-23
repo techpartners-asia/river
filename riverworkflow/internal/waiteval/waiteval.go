@@ -84,11 +84,22 @@ func compileExpr(env *cel.Env, expr string) (cel.Program, error) {
 }
 
 // evalBool evaluates a compiled program with the given activation and returns
-// the boolean result or an error if the result is not a boolean.
+// the boolean result.
+//
+// CONTRACT: if prg.Eval returns a runtime error (e.g. "no such key" when a dep
+// or signal is not yet in the inputs map, or field-access on a scalar payload),
+// evalBool returns (false, nil). This is the "not yet satisfied" contract:
+// compile-time type errors are caught earlier by Compile/WaitSpec.Validate, so
+// a runtime error at scheduler time means the inputs are not ready yet, which
+// maps to false and will be re-evaluated on the next scheduler tick.
+//
+// Truly internal non-recoverable failures (the evaluated expression does not
+// return a bool value at all) are still returned as errors.
 func evalBool(prg cel.Program, activation map[string]any) (bool, error) {
 	out, _, err := prg.Eval(activation)
 	if err != nil {
-		return false, fmt.Errorf("waiteval: eval: %w", err)
+		// Runtime eval errors mean inputs are not ready yet — treat as false.
+		return false, nil
 	}
 	b, ok := out.Value().(bool)
 	if !ok {
