@@ -541,6 +541,7 @@ WITH candidates AS (
   FROM /* TEMPLATE: schema */river_job j
   WHERE j.state = 'pending'
     AND json_extract(j.metadata, '$."river:workflow_id"') IS NOT NULL
+    -- SQLite equivalent of Postgres NOT (metadata ? 'river:workflow_wait'): both exclude wait-bearing tasks; equivalent because the key is always written as a non-null JSON value.
     AND json_extract(j.metadata, '$."river:workflow_wait"') IS NULL
   ORDER BY j.id
   LIMIT @max

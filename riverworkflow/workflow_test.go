@@ -3,7 +3,6 @@ package riverworkflow
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -196,20 +195,13 @@ func TestWorkflowWaitMetadata(t *testing.T) {
 	})
 
 	res, err := w.Prepare(context.Background())
-	if err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
+	require.NoError(t, err)
 	job := res.Jobs[0]
-	if job.InsertOpts == nil || !job.InsertOpts.Pending {
-		t.Fatalf("wait-bearing task must be Pending")
-	}
+	require.NotNil(t, job.InsertOpts)
+	require.True(t, job.InsertOpts.Pending, "wait-bearing task must be Pending")
 	var meta map[string]json.RawMessage
-	if err := json.Unmarshal(job.InsertOpts.Metadata, &meta); err != nil {
-		t.Fatalf("metadata: %v", err)
-	}
-	if _, ok := meta[rivercommon.MetadataKeyWorkflowWait]; !ok {
-		t.Fatalf("expected %s in metadata, got %v", rivercommon.MetadataKeyWorkflowWait, meta)
-	}
+	require.NoError(t, json.Unmarshal(job.InsertOpts.Metadata, &meta))
+	require.Contains(t, meta, rivercommon.MetadataKeyWorkflowWait)
 }
 
 func TestWorkflowWaitInvalidRejected(t *testing.T) {
@@ -217,7 +209,6 @@ func TestWorkflowWaitInvalidRejected(t *testing.T) {
 	w.Add("gate", sortArgs{}, nil, &WorkflowTaskOpts{
 		Wait: &WaitSpec{Terms: []WaitTermSpec{WaitTerm("a", "true")}, Expr: ""},
 	})
-	if _, err := w.Prepare(context.Background()); !errors.Is(err, ErrWaitExprEmpty) {
-		t.Fatalf("want ErrWaitExprEmpty, got %v", err)
-	}
+	_, err := w.Prepare(context.Background())
+	require.ErrorIs(t, err, ErrWaitExprEmpty)
 }

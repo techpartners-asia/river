@@ -1,9 +1,10 @@
 package riverworkflow
 
 import (
-	"errors"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestWaitSpecValidate(t *testing.T) {
@@ -15,23 +16,17 @@ func TestWaitSpecValidate(t *testing.T) {
 			},
 			Expr: "approved || deadline",
 		}
-		if err := s.Validate(); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, s.Validate())
 	})
 
 	t.Run("EmptyExpr", func(t *testing.T) {
 		s := &WaitSpec{Terms: []WaitTermSpec{WaitTerm("t", "true")}, Expr: ""}
-		if !errors.Is(s.Validate(), ErrWaitExprEmpty) {
-			t.Fatalf("want ErrWaitExprEmpty, got %v", s.Validate())
-		}
+		require.ErrorIs(t, s.Validate(), ErrWaitExprEmpty)
 	})
 
 	t.Run("EmptyTermName", func(t *testing.T) {
 		s := &WaitSpec{Terms: []WaitTermSpec{WaitTerm("", "true")}, Expr: "x"}
-		if !errors.Is(s.Validate(), ErrWaitTermNameEmpty) {
-			t.Fatalf("want ErrWaitTermNameEmpty, got %v", s.Validate())
-		}
+		require.ErrorIs(t, s.Validate(), ErrWaitTermNameEmpty)
 	})
 
 	t.Run("DuplicateTermName", func(t *testing.T) {
@@ -39,9 +34,7 @@ func TestWaitSpecValidate(t *testing.T) {
 			Terms: []WaitTermSpec{WaitTerm("a", "true"), WaitTerm("a", "false")},
 			Expr:  "a",
 		}
-		if !errors.Is(s.Validate(), ErrWaitTermNameDuplicate) {
-			t.Fatalf("want ErrWaitTermNameDuplicate, got %v", s.Validate())
-		}
+		require.ErrorIs(t, s.Validate(), ErrWaitTermNameDuplicate)
 	})
 
 	t.Run("TimerAfterTaskFinalizedNeedsDep", func(t *testing.T) {
@@ -49,19 +42,18 @@ func TestWaitSpecValidate(t *testing.T) {
 			Terms: []WaitTermSpec{WaitTermTimer(TimerAfterTaskFinalized("d", "", time.Minute))},
 			Expr:  "d",
 		}
-		if !errors.Is(s.Validate(), ErrWaitTimerAnchorInvalid) {
-			t.Fatalf("want ErrWaitTimerAnchorInvalid, got %v", s.Validate())
-		}
+		require.ErrorIs(t, s.Validate(), ErrWaitTimerAnchorInvalid)
 	})
 }
 
 func TestWaitTermBuilders(t *testing.T) {
 	sig := WaitTermSignal("n", "k", "payload.ok").Label("human approval")
-	if sig.Kind != WaitTermKindSignal || sig.Key != "k" || sig.LabelText != "human approval" {
-		t.Fatalf("signal term wrong: %+v", sig)
-	}
+	require.Equal(t, WaitTermKindSignal, sig.Kind)
+	require.Equal(t, "k", sig.Key)
+	require.Equal(t, "human approval", sig.LabelText)
+
 	tim := WaitTermTimer(TimerAt("when", time.Unix(0, 0)))
-	if tim.Kind != WaitTermKindTimer || tim.Timer == nil || tim.Timer.Kind != TimerKindAt {
-		t.Fatalf("timer term wrong: %+v", tim)
-	}
+	require.Equal(t, WaitTermKindTimer, tim.Kind)
+	require.NotNil(t, tim.Timer)
+	require.Equal(t, TimerKindAt, tim.Timer.Kind)
 }

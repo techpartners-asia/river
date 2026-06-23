@@ -31,11 +31,11 @@ var (
 // TimerSpec describes a time anchor for a timer wait term. Construct via the
 // Timer* builders rather than directly.
 type TimerSpec struct {
-	Name        string
-	Kind        string
-	At          time.Time     // TimerKindAt
-	Dur         time.Duration // relative kinds
-	DepTaskName string        // TimerKindAfterTaskFinalized
+	Name        string        `json:"name"`
+	Kind        string        `json:"kind"`
+	At          time.Time     `json:"at,omitempty"`            // TimerKindAt
+	Dur         time.Duration `json:"dur,omitempty"`           // relative kinds
+	DepTaskName string        `json:"dep_task_name,omitempty"` // TimerKindAfterTaskFinalized
 }
 
 func TimerAt(name string, t time.Time) TimerSpec {
@@ -53,12 +53,12 @@ func TimerAfterTaskFinalized(name, depTaskName string, d time.Duration) TimerSpe
 
 // WaitTermSpec is a single named predicate within a WaitSpec.
 type WaitTermSpec struct {
-	Name      string
-	Kind      string
-	Key       string     // signal key (signal terms)
-	CELExpr   string     // signal-scoped or generic CEL
-	Timer     *TimerSpec // timer terms
-	LabelText string
+	Name      string     `json:"name"`
+	Kind      string     `json:"kind"`
+	Key       string     `json:"key,omitempty"`      // signal key (signal terms)
+	CELExpr   string     `json:"cel_expr,omitempty"` // signal-scoped or generic CEL
+	Timer     *TimerSpec `json:"timer,omitempty"`    // timer terms
+	LabelText string     `json:"label,omitempty"`
 }
 
 // Label sets a human-readable label and returns the term for chaining.
@@ -77,12 +77,13 @@ func WaitTerm(name, celExpr string) WaitTermSpec {
 // WaitSpec is a CEL boolean expression over named terms; a wait-bearing task
 // is promoted only when Expr evaluates true.
 type WaitSpec struct {
-	Terms []WaitTermSpec
-	Expr  string
+	Terms []WaitTermSpec `json:"terms"`
+	Expr  string         `json:"expr"`
 }
 
-// Validate performs structural validation. NOTE: CEL syntax validation of
-// Expr and term CELExpr is deferred to Checkpoint 2 (waiteval). // PARITY: CEL-syntax check pending.
+// Validate performs structural validation. CEL syntax validation of
+// Expr and term CELExpr is deferred to Checkpoint 2 (waiteval).
+// PARITY: CEL-syntax check pending.
 func (s *WaitSpec) Validate() error {
 	if s.Expr == "" {
 		return ErrWaitExprEmpty
