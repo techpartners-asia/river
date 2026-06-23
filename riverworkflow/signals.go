@@ -114,11 +114,17 @@ type WorkflowSignalListParams struct {
 // List returns signals for this workflow, optionally filtered by key.
 // Results are ordered by (created_at, id) ascending (historical/audit view).
 // Uses OrderByNewest:false so results are not truncated at the newest end.
+//
+// List always includes resolved signals (resolved_at IS NOT NULL) because it
+// is a full historical/audit view. Use [WorkflowSignals.ListForTask] with
+// IncludeAfterResolution:false (the default) to restrict to unresolved signals
+// only.
 func (s *WorkflowSignals[TTx]) List(ctx context.Context, params *WorkflowSignalListParams) ([]*rivertype.WorkflowSignal, error) {
 	p := &riverdriver.WorkflowSignalListParams{
-		WorkflowID: s.workflowID,
-		Max:        signalScanLimit,
-		Schema:     s.schema,
+		WorkflowID:      s.workflowID,
+		IncludeResolved: true, // audit view: always include resolved signals
+		Max:             signalScanLimit,
+		Schema:          s.schema,
 	}
 	if params != nil {
 		if params.SignalKey != "" {

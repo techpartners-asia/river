@@ -93,6 +93,12 @@ const (
 // the workflow scheduler's input-building so diagnostics agree with what the
 // scheduler would compute. Signal-load errors are returned directly to the
 // caller (a read API); unlike the scheduler, which logs and continues.
+//
+// Note: the scheduler always loads all signals regardless of resolved_at, so
+// it is never affected by resolution-marking. WaitDiagnostics defaults to
+// excluding resolved signals (IncludeAfterResolution:false); once a resolution
+// writer is active, diagnostics may diverge from the scheduler unless
+// IncludeAfterResolution is set to true.
 func (w *Workflow[TTx]) WaitDiagnostics(ctx context.Context, taskName string, opts *WorkflowWaitDiagnosticsOpts) (*WaitDiagnostics, error) {
 	return w.waitDiagnosticsOnExec(ctx, w.exec, taskName, opts)
 }
