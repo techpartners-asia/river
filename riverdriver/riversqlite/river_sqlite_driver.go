@@ -489,7 +489,7 @@ func (e *Executor) JobApplyWorkflowWait(ctx context.Context, params *riverdriver
 			})
 			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
-					return nil, nil
+					return nil, rivertype.ErrNotFound
 				}
 				return nil, interpretError(err)
 			}
@@ -501,9 +501,9 @@ func (e *Executor) JobApplyWorkflowWait(ctx context.Context, params *riverdriver
 		if err != nil {
 			return nil, interpretError(err)
 		}
-		// If no longer pending, return no-op.
+		// If no longer pending, return not found (consistent with Postgres ErrNoRows behavior).
 		if existing.State != rivertype.JobStatePending {
-			return nil, nil
+			return nil, rivertype.ErrNotFound
 		}
 
 		newState := "available"
@@ -518,7 +518,7 @@ func (e *Executor) JobApplyWorkflowWait(ctx context.Context, params *riverdriver
 		})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return nil, nil
+				return nil, rivertype.ErrNotFound
 			}
 			return nil, interpretError(err)
 		}

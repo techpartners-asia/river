@@ -340,6 +340,29 @@ func exerciseJobApplyWorkflowWait[TTx any](ctx context.Context, t *testing.T, ex
 			require.NoError(t, json.Unmarshal(row.Metadata, &meta))
 			require.Contains(t, meta, rivercommon.MetadataKeyWorkflowWaitFailedReason, "failed_reason must be set on cancel")
 		})
+
+		t.Run("NonPendingRow_ReturnsErrNotFound", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			// Insert a job in available state (not pending) — outcome must not apply.
+			availableJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: "wf-wait-not-pending",
+				TaskName:   "w4",
+				State:      rivertype.JobStateAvailable,
+				Wait:       json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      availableJob.ID,
+				Outcome: "promote",
+				Now:     now,
+			})
+			require.ErrorIs(t, err, rivertype.ErrNotFound, "non-pending row must return ErrNotFound")
+			require.Nil(t, row)
+		})
 	})
 }
 
