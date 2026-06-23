@@ -223,7 +223,8 @@ func (p *Program) Evaluate(in Inputs) (bool, error) {
 			if !present {
 				val = false
 			} else if ct.subProg == nil {
-				// No sub-expression means presence alone suffices.
+				// A signal term with an empty CELExpr gates on signal presence alone,
+				// independent of the payload.
 				val = true
 			} else {
 				// PARITY: full signal metadata wired in CP3 (attempt, created_at, id, source)

@@ -63,3 +63,20 @@ func TestExprCombinesTerms(t *testing.T) {
 		t.Fatal("t||s with t fired must be true")
 	}
 }
+
+func TestSignalTermEmptyCELExprGatesOnPresence(t *testing.T) {
+	p, err := Compile([]TermData{{Name: "got", Kind: "signal", Key: "ping", CELExpr: ""}}, "got")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// Absent → false.
+	got, err := p.Evaluate(Inputs{Signals: map[string]any{}})
+	if err != nil || got {
+		t.Fatalf("absent signal must be false; got %v,%v", got, err)
+	}
+	// Present (any payload, even nil) → true, on presence alone.
+	got, err = p.Evaluate(Inputs{Signals: map[string]any{"ping": nil}})
+	if err != nil || !got {
+		t.Fatalf("present signal with empty CELExpr must be true; got %v,%v", got, err)
+	}
+}
