@@ -12,6 +12,23 @@ func TestCompileRejectsBadSyntax(t *testing.T) {
 	}
 }
 
+// TestCompileRejectsNonBoolSubExpr verifies that Compile returns an error when
+// a term's CEL sub-expression has a concretely non-bool output type (e.g. int).
+// This catches misconfigured wait specs at Validate()/registration time rather
+// than silently logging eval errors on every scheduler tick.
+func TestCompileRejectsNonBoolSubExpr(t *testing.T) {
+	// "1 + 1" is a statically-typed int expression, not bool or dyn.
+	_, err := Compile([]TermData{{Name: "a", Kind: "generic", CELExpr: "1 + 1"}}, "a")
+	if err == nil {
+		t.Fatal("expected compile error for non-bool generic term sub-expression")
+	}
+	// Signal terms must also be checked.
+	_, err = Compile([]TermData{{Name: "s", Kind: "signal", Key: "k", CELExpr: "id + 1"}}, "s")
+	if err == nil {
+		t.Fatal("expected compile error for non-bool signal term sub-expression")
+	}
+}
+
 func TestTimerTermFromInputs(t *testing.T) {
 	p, err := Compile([]TermData{{Name: "deadline", Kind: "timer", HasTimer: true}}, "deadline")
 	if err != nil {

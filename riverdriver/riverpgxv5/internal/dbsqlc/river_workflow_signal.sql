@@ -41,3 +41,11 @@ WHERE workflow_id = @workflow_id
   AND (sqlc.narg('signal_key')::text IS NULL OR signal_key = sqlc.narg('signal_key'))
 ORDER BY created_at, id
 LIMIT @max::int;
+
+-- name: WorkflowSignalListNewest :many
+SELECT *
+FROM /* TEMPLATE: schema */river_workflow_signal
+WHERE workflow_id = @workflow_id
+  AND (sqlc.narg('signal_key')::text IS NULL OR signal_key = sqlc.narg('signal_key'))
+ORDER BY created_at DESC, id DESC
+LIMIT @max::int;

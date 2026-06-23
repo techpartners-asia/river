@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 )
 
 // TermData is the engine's decoupled view of a wait term. Task 3 maps from
@@ -91,17 +92,27 @@ func buildSignalEnv() (*cel.Env, error) {
 }
 
 // compileExpr compiles a CEL expression in the given environment and returns a
-// ready-to-evaluate Program or an error.
-func compileExpr(env *cel.Env, expr string) (cel.Program, error) {
+// ready-to-evaluate Program, the compiled AST (for output-type inspection), or an error.
+func compileExpr(env *cel.Env, expr string) (cel.Program, *cel.Ast, error) {
 	ast, iss := env.Compile(expr)
 	if iss != nil && iss.Err() != nil {
-		return nil, iss.Err()
+		return nil, nil, iss.Err()
 	}
 	prg, err := env.Program(ast)
 	if err != nil {
-		return nil, fmt.Errorf("waiteval: program construction: %w", err)
+		return nil, nil, fmt.Errorf("waiteval: program construction: %w", err)
 	}
-	return prg, nil
+	return prg, ast, nil
+}
+
+// isBoolOrDynOutputType returns true if the compiled AST's output type is
+// bool or dyn. Field/index accesses on dyn variables yield dyn statically
+// (e.g. payload.ok is dyn, not bool), so we allow dyn through and rely on
+// runtime evaluation to catch non-bool payloads. We reject concretely-typed
+// non-bool output (e.g. int, string) to surface configuration errors early.
+func isBoolOrDynOutputType(ast *cel.Ast) bool {
+	k := ast.OutputType().Kind()
+	return k == types.BoolKind || k == types.DynKind
 }
 
 // evalBool evaluates a compiled program with the given activation and returns
@@ -154,18 +165,24 @@ func Compile(terms []TermData, expr string) (*Program, error) {
 
 		case "signal":
 			if td.CELExpr != "" {
-				prg, err := compileExpr(sigEnv, td.CELExpr)
+				prg, ast, err := compileExpr(sigEnv, td.CELExpr)
 				if err != nil {
 					return nil, fmt.Errorf("waiteval: compile signal term %q: %w", td.Name, err)
+				}
+				if !isBoolOrDynOutputType(ast) {
+					return nil, fmt.Errorf("waiteval: signal term %q: CEL sub-expression must return bool (got %s)", td.Name, ast.OutputType())
 				}
 				ct.subProg = prg
 			}
 
 		case "generic":
 			if td.CELExpr != "" {
-				prg, err := compileExpr(baseEnv, td.CELExpr)
+				prg, ast, err := compileExpr(baseEnv, td.CELExpr)
 				if err != nil {
 					return nil, fmt.Errorf("waiteval: compile generic term %q: %w", td.Name, err)
+				}
+				if !isBoolOrDynOutputType(ast) {
+					return nil, fmt.Errorf("waiteval: generic term %q: CEL sub-expression must return bool (got %s)", td.Name, ast.OutputType())
 				}
 				ct.subProg = prg
 			}
@@ -194,7 +211,7 @@ func Compile(terms []TermData, expr string) (*Program, error) {
 		return nil, fmt.Errorf("waiteval: build top-level env: %w", err)
 	}
 
-	topProg, err := compileExpr(topEnv, expr)
+	topProg, _, err := compileExpr(topEnv, expr)
 	if err != nil {
 		return nil, fmt.Errorf("waiteval: compile top-level expr: %w", err)
 	}

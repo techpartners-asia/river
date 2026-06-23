@@ -259,21 +259,22 @@ func (s *WorkflowScheduler) processWaitTask(
 		}
 	}
 
-	// Load signals for this workflow and build the per-key view. We load all
-	// signals (up to the scan limit) and keep only the latest per key, defined
-	// as the row with the greatest (created_at, id). WorkflowSignalList
-	// returns rows ordered (created_at, id) ASC, so the last element for each
-	// key is the newest; we nevertheless track the explicit maximum for
-	// robustness against future ordering changes.
+	// Load signals for this workflow and build the per-key view. We load with
+	// OrderByNewest:true (DESC) so the newest SignalScanLimit signals are
+	// fetched first, avoiding truncation of the most recent signals when the
+	// total count exceeds the scan limit. We keep only the latest per key,
+	// defined as the row with the greatest (created_at, id); the max-by reduce
+	// is robust regardless of ordering direction.
 	//
 	// PARITY: Attempt = number of signals emitted for the key (count), inferred.
 	var signalViews map[string]waiteval.SignalView
 	if hasSignalTerm {
 		iterCtx2, cancel2 := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
 		rawSignals, signalErr := s.exec.WorkflowSignalList(iterCtx2, &riverdriver.WorkflowSignalListParams{
-			WorkflowID: workflowID,
-			Max:        s.config.SignalScanLimit,
-			Schema:     s.config.Schema,
+			WorkflowID:    workflowID,
+			Max:           s.config.SignalScanLimit,
+			OrderByNewest: true, // DESC so newest signals are not truncated when count > SignalScanLimit
+			Schema:        s.config.Schema,
 		})
 		cancel2()
 		if signalErr != nil {

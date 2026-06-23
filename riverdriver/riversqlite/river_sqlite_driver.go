@@ -1777,6 +1777,17 @@ func (e *Executor) WorkflowSignalList(ctx context.Context, params *riverdriver.W
 	if params.SignalKey != nil {
 		signalKey = *params.SignalKey
 	}
+	if params.OrderByNewest {
+		rows, err := dbsqlc.New().WorkflowSignalListNewest(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.WorkflowSignalListNewestParams{
+			WorkflowID: params.WorkflowID,
+			SignalKey:  signalKey,
+			Max:        int64(params.Max),
+		})
+		if err != nil {
+			return nil, interpretError(err)
+		}
+		return sliceutil.Map(rows, workflowSignalFromInternal), nil
+	}
 	rows, err := dbsqlc.New().WorkflowSignalList(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.WorkflowSignalListParams{
 		WorkflowID: params.WorkflowID,
 		SignalKey:  signalKey,

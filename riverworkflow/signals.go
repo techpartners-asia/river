@@ -112,7 +112,8 @@ type WorkflowSignalListParams struct {
 }
 
 // List returns signals for this workflow, optionally filtered by key.
-// Results are ordered by (created_at, id) ascending.
+// Results are ordered by (created_at, id) ascending (historical/audit view).
+// Uses OrderByNewest:false so results are not truncated at the newest end.
 func (s *WorkflowSignals[TTx]) List(ctx context.Context, params *WorkflowSignalListParams) ([]*rivertype.WorkflowSignal, error) {
 	p := &riverdriver.WorkflowSignalListParams{
 		WorkflowID: s.workflowID,
@@ -141,7 +142,8 @@ type WorkflowSignalListForTaskParams struct {
 // ListForTask returns signals for this workflow filtered by signal key. The
 // taskName parameter is accepted for API parity with the Pro edition but is
 // not used for filtering in CP3; per-task resolution views are a CP4 feature.
-// Results are ordered by (created_at, id) ascending.
+// Results are ordered by (created_at, id) ascending (historical/audit view).
+// Uses OrderByNewest:false so results are not truncated at the newest end.
 func (s *WorkflowSignals[TTx]) ListForTask(ctx context.Context, taskName, key string, params *WorkflowSignalListForTaskParams) ([]*rivertype.WorkflowSignal, error) {
 	// taskName is accepted for future per-task filtering (CP4). In CP3 we
 	// filter by workflow+key only.
@@ -169,16 +171,19 @@ type WorkflowSignalLatestForTaskOpts struct{}
 // for API parity with the Pro edition but is not used for filtering in CP3;
 // per-task resolution views are a CP4 feature.
 //
-// "Latest" is determined by (created_at DESC, id DESC).
+// "Latest" is determined by (created_at DESC, id DESC). Uses
+// OrderByNewest:true so the first returned row is the newest, avoiding
+// truncation of recent signals when there are more than signalScanLimit rows.
 func (s *WorkflowSignals[TTx]) LatestForTask(ctx context.Context, taskName, key string, _ *WorkflowSignalLatestForTaskOpts) (*rivertype.WorkflowSignal, error) {
 	// taskName is accepted for future per-task filtering (CP4). In CP3 we
 	// filter by workflow+key only.
 	_ = taskName
 
 	p := &riverdriver.WorkflowSignalListParams{
-		WorkflowID: s.workflowID,
-		Max:        signalScanLimit,
-		Schema:     s.schema,
+		WorkflowID:    s.workflowID,
+		Max:           signalScanLimit,
+		OrderByNewest: true, // DESC so first row = newest; safe with truncation
+		Schema:        s.schema,
 	}
 	if key != "" {
 		p.SignalKey = &key
@@ -190,14 +195,7 @@ func (s *WorkflowSignals[TTx]) LatestForTask(ctx context.Context, taskName, key 
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	// WorkflowSignalList returns rows ordered (created_at, id) ASC; the last
-	// element is the newest. We verify by tracking the explicit maximum so
-	// the result is correct regardless of future ordering changes.
-	latest := rows[0]
-	for _, row := range rows[1:] {
-		if row.CreatedAt.After(latest.CreatedAt) || (row.CreatedAt.Equal(latest.CreatedAt) && row.ID > latest.ID) {
-			latest = row
-		}
-	}
-	return latest, nil
+	// With OrderByNewest:true, rows are ordered (created_at DESC, id DESC):
+	// the first element is the newest signal.
+	return rows[0], nil
 }

@@ -1025,6 +1025,13 @@ type WorkflowSignalListParams struct {
 	// Max is the maximum number of rows to return.
 	Max int
 
+	// OrderByNewest, when true, returns rows ordered by (created_at DESC, id DESC)
+	// so the first element is the most recently emitted signal. When false (the
+	// default), rows are ordered (created_at ASC, id ASC) — the historical/audit
+	// view. Use true for LatestForTask and the scheduler's per-key load; use false
+	// for List and ListForTask (history views).
+	OrderByNewest bool
+
 	// Schema is the database schema to use. Empty means the default schema.
 	Schema string
 }

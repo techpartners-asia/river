@@ -135,3 +135,50 @@ func (q *Queries) WorkflowSignalList(ctx context.Context, db DBTX, arg *Workflow
 	}
 	return items, nil
 }
+
+const workflowSignalListNewest = `-- name: WorkflowSignalListNewest :many
+SELECT id, workflow_id, signal_key, payload, idempotency_key, source, created_at, resolved_at
+FROM /* TEMPLATE: schema */river_workflow_signal
+WHERE workflow_id = ?1
+  AND (?2 IS NULL OR signal_key = cast(?2 AS text))
+ORDER BY created_at DESC, id DESC
+LIMIT cast(?3 AS integer)
+`
+
+type WorkflowSignalListNewestParams struct {
+	WorkflowID string
+	SignalKey  interface{}
+	Max        int64
+}
+
+func (q *Queries) WorkflowSignalListNewest(ctx context.Context, db DBTX, arg *WorkflowSignalListNewestParams) ([]*RiverWorkflowSignal, error) {
+	rows, err := db.QueryContext(ctx, workflowSignalListNewest, arg.WorkflowID, arg.SignalKey, arg.Max)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*RiverWorkflowSignal
+	for rows.Next() {
+		var i RiverWorkflowSignal
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkflowID,
+			&i.SignalKey,
+			&i.Payload,
+			&i.IdempotencyKey,
+			&i.Source,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

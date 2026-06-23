@@ -144,6 +144,49 @@ func exerciseWorkflowSignal[TTx any](ctx context.Context, t *testing.T, executor
 			require.Len(t, sigs, 2, "two emits with nil idempotency_key must produce two rows")
 		})
 
+		t.Run("List_NewestOrderingRespectsTruncation", func(t *testing.T) {
+			t.Parallel()
+
+			exec, bundle := setup(ctx, t)
+
+			base := time.Now().UTC().Truncate(time.Second)
+
+			// Use at least second-level spacing (SQLite has second-level precision).
+			step := bundle.driver.TimePrecision()
+			if step < time.Second {
+				step = time.Second
+			}
+
+			// Insert 3 signals with deterministically increasing created_at.
+			inserted := make([]*rivertype.WorkflowSignal, 3)
+			for i := range 3 {
+				var err error
+				inserted[i], err = exec.WorkflowSignalEmit(ctx, &riverdriver.WorkflowSignalEmitParams{
+					WorkflowID: "wf-006",
+					SignalKey:  "sig.trunc",
+					Payload:    []byte(`{}`),
+					Now:        base.Add(time.Duration(i) * step),
+				})
+				require.NoError(t, err)
+			}
+
+			// Fetch only 2 rows with OrderByNewest:true — must return the 2 newest.
+			got, err := exec.WorkflowSignalList(ctx, &riverdriver.WorkflowSignalListParams{
+				WorkflowID:    "wf-006",
+				Max:           2,
+				OrderByNewest: true,
+			})
+			require.NoError(t, err)
+			require.Len(t, got, 2)
+			// First row must be the newest (inserted[2]), second must be inserted[1].
+			require.Equal(t, inserted[2].ID, got[0].ID, "first result must be the newest signal (inserted[2])")
+			require.Equal(t, inserted[1].ID, got[1].ID, "second result must be inserted[1]")
+			// The oldest signal (inserted[0]) must not be present.
+			for _, s := range got {
+				require.NotEqual(t, inserted[0].ID, s.ID, "oldest signal must not appear in newest-2 result")
+			}
+		})
+
 		t.Run("List_FiltersAndOrders", func(t *testing.T) {
 			t.Parallel()
 
