@@ -187,6 +187,78 @@ func exerciseWorkflowSignal[TTx any](ctx context.Context, t *testing.T, executor
 			}
 		})
 
+		t.Run("List_IncludeAfterResolution", func(t *testing.T) {
+			t.Parallel()
+
+			exec, bundle := setup(ctx, t)
+
+			base := time.Now().UTC().Truncate(time.Second)
+
+			step := bundle.driver.TimePrecision()
+			if step < time.Second {
+				step = time.Second
+			}
+
+			// Insert two signals with different keys: one to be resolved, one to stay active.
+			sigResolved, err := exec.WorkflowSignalEmit(ctx, &riverdriver.WorkflowSignalEmitParams{
+				WorkflowID: "wf-resolved-01",
+				SignalKey:  "sig.done",
+				Payload:    []byte(`{"n":1}`),
+				Now:        base,
+			})
+			require.NoError(t, err)
+
+			sigActive, err := exec.WorkflowSignalEmit(ctx, &riverdriver.WorkflowSignalEmitParams{
+				WorkflowID: "wf-resolved-01",
+				SignalKey:  "sig.active",
+				Payload:    []byte(`{"n":2}`),
+				Now:        base.Add(step),
+			})
+			require.NoError(t, err)
+
+			// Mark only "sig.done" as resolved.
+			err = exec.WorkflowSignalMarkResolved(ctx, &riverdriver.WorkflowSignalMarkResolvedParams{
+				WorkflowID: "wf-resolved-01",
+				SignalKeys: []string{"sig.done"},
+				Now:        base.Add(2 * step),
+			})
+			require.NoError(t, err)
+
+			// Default list (IncludeResolved:false) must exclude the resolved signal and return only active.
+			got, err := exec.WorkflowSignalList(ctx, &riverdriver.WorkflowSignalListParams{
+				WorkflowID:      "wf-resolved-01",
+				IncludeResolved: false,
+				Max:             100,
+			})
+			require.NoError(t, err)
+			require.Len(t, got, 1, "default filter must exclude resolved signal")
+			require.Equal(t, sigActive.ID, got[0].ID, "only the unresolved signal must be returned")
+
+			// With IncludeResolved:true both signals must appear.
+			gotAll, err := exec.WorkflowSignalList(ctx, &riverdriver.WorkflowSignalListParams{
+				WorkflowID:      "wf-resolved-01",
+				IncludeResolved: true,
+				Max:             100,
+			})
+			require.NoError(t, err)
+			require.Len(t, gotAll, 2, "IncludeResolved:true must return all signals including resolved")
+
+			// The resolved signal must have a non-nil resolved_at.
+			for _, s := range gotAll {
+				if s.ID == sigResolved.ID {
+					require.NotNil(t, s.ResolvedAt, "resolved signal must have non-nil resolved_at")
+				}
+			}
+
+			// Mark the same key a second time — must be idempotent (no error).
+			err = exec.WorkflowSignalMarkResolved(ctx, &riverdriver.WorkflowSignalMarkResolvedParams{
+				WorkflowID: "wf-resolved-01",
+				SignalKeys: []string{"sig.done"},
+				Now:        base.Add(3 * step),
+			})
+			require.NoError(t, err)
+		})
+
 		t.Run("List_FiltersAndOrders", func(t *testing.T) {
 			t.Parallel()
 

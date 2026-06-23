@@ -1779,9 +1779,10 @@ func (e *Executor) WorkflowSignalList(ctx context.Context, params *riverdriver.W
 	}
 	if params.OrderByNewest {
 		rows, err := dbsqlc.New().WorkflowSignalListNewest(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.WorkflowSignalListNewestParams{
-			WorkflowID: params.WorkflowID,
-			SignalKey:  signalKey,
-			Max:        int64(params.Max),
+			WorkflowID:      params.WorkflowID,
+			SignalKey:       signalKey,
+			IncludeResolved: params.IncludeResolved,
+			Max:             int64(params.Max),
 		})
 		if err != nil {
 			return nil, interpretError(err)
@@ -1789,14 +1790,24 @@ func (e *Executor) WorkflowSignalList(ctx context.Context, params *riverdriver.W
 		return sliceutil.Map(rows, workflowSignalFromInternal), nil
 	}
 	rows, err := dbsqlc.New().WorkflowSignalList(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.WorkflowSignalListParams{
-		WorkflowID: params.WorkflowID,
-		SignalKey:  signalKey,
-		Max:        int64(params.Max),
+		WorkflowID:      params.WorkflowID,
+		SignalKey:       signalKey,
+		IncludeResolved: params.IncludeResolved,
+		Max:             int64(params.Max),
 	})
 	if err != nil {
 		return nil, interpretError(err)
 	}
 	return sliceutil.Map(rows, workflowSignalFromInternal), nil
+}
+
+func (e *Executor) WorkflowSignalMarkResolved(ctx context.Context, params *riverdriver.WorkflowSignalMarkResolvedParams) error {
+	err := dbsqlc.New().WorkflowSignalMarkResolved(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.WorkflowSignalMarkResolvedParams{
+		WorkflowID: params.WorkflowID,
+		SignalKeys: params.SignalKeys,
+		Now:        params.Now.UTC().Format(time.RFC3339Nano),
+	})
+	return interpretError(err)
 }
 
 func workflowSignalFromInternal(internal *dbsqlc.RiverWorkflowSignal) *rivertype.WorkflowSignal {

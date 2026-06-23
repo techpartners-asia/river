@@ -134,6 +134,14 @@ func (s *WorkflowSignals[TTx]) List(ctx context.Context, params *WorkflowSignalL
 
 // WorkflowSignalListForTaskParams configures [WorkflowSignals.ListForTask].
 type WorkflowSignalListForTaskParams struct {
+	// IncludeAfterResolution, when true, includes signals whose resolved_at is
+	// set. When false (the default), only unresolved signals are returned.
+	//
+	// Note: resolved_at is reserved for future resolution-marking. No signals
+	// are currently marked resolved by this library, so this field has no
+	// effect until a resolution writer is wired (CP4+).
+	IncludeAfterResolution bool
+
 	// Max is the maximum number of signals to return. Defaults to
 	// signalScanLimit (10 000) when zero.
 	Max int
@@ -157,14 +165,25 @@ func (s *WorkflowSignals[TTx]) ListForTask(ctx context.Context, taskName, key st
 	if key != "" {
 		p.SignalKey = &key
 	}
-	if params != nil && params.Max > 0 {
-		p.Max = params.Max
+	if params != nil {
+		p.IncludeResolved = params.IncludeAfterResolution
+		if params.Max > 0 {
+			p.Max = params.Max
+		}
 	}
 	return s.exec.WorkflowSignalList(ctx, p)
 }
 
 // WorkflowSignalLatestForTaskOpts configures [WorkflowSignals.LatestForTask].
-type WorkflowSignalLatestForTaskOpts struct{}
+type WorkflowSignalLatestForTaskOpts struct {
+	// IncludeAfterResolution, when true, includes signals whose resolved_at is
+	// set. When false (the default), only unresolved signals are considered.
+	//
+	// Note: resolved_at is reserved for future resolution-marking. No signals
+	// are currently marked resolved by this library, so this field has no
+	// effect until a resolution writer is wired (CP4+).
+	IncludeAfterResolution bool
+}
 
 // LatestForTask returns the most recently created signal for the given key,
 // or nil if no signal has been emitted. The taskName parameter is accepted
@@ -174,7 +193,7 @@ type WorkflowSignalLatestForTaskOpts struct{}
 // "Latest" is determined by (created_at DESC, id DESC). Uses
 // OrderByNewest:true so the first returned row is the newest, avoiding
 // truncation of recent signals when there are more than signalScanLimit rows.
-func (s *WorkflowSignals[TTx]) LatestForTask(ctx context.Context, taskName, key string, _ *WorkflowSignalLatestForTaskOpts) (*rivertype.WorkflowSignal, error) {
+func (s *WorkflowSignals[TTx]) LatestForTask(ctx context.Context, taskName, key string, opts *WorkflowSignalLatestForTaskOpts) (*rivertype.WorkflowSignal, error) {
 	// taskName is accepted for future per-task filtering (CP4). In CP3 we
 	// filter by workflow+key only.
 	_ = taskName
@@ -187,6 +206,9 @@ func (s *WorkflowSignals[TTx]) LatestForTask(ctx context.Context, taskName, key 
 	}
 	if key != "" {
 		p.SignalKey = &key
+	}
+	if opts != nil {
+		p.IncludeResolved = opts.IncludeAfterResolution
 	}
 	rows, err := s.exec.WorkflowSignalList(ctx, p)
 	if err != nil {

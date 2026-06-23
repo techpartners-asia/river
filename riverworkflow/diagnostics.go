@@ -91,7 +91,8 @@ const (
 // WaitDiagnostics returns a read-only snapshot of the wait expression
 // evaluation for the named task in this workflow. It mirrors the semantics of
 // the workflow scheduler's input-building so diagnostics agree with what the
-// scheduler would compute.
+// scheduler would compute. Signal-load errors are returned directly to the
+// caller (a read API); unlike the scheduler, which logs and continues.
 func (w *Workflow[TTx]) WaitDiagnostics(ctx context.Context, taskName string, opts *WorkflowWaitDiagnosticsOpts) (*WaitDiagnostics, error) {
 	return w.waitDiagnosticsOnExec(ctx, w.exec, taskName, opts)
 }
@@ -256,12 +257,15 @@ func (w *Workflow[TTx]) waitDiagnosticsOnExec(ctx context.Context, exec riverdri
 		}
 	}
 
+	includeResolved := opts != nil && opts.IncludeAfterResolution
+
 	if hasSignalTerm {
 		rawSignals, err := exec.WorkflowSignalList(ctx, &riverdriver.WorkflowSignalListParams{
-			WorkflowID:    w.id,
-			Max:           scanLimit,
-			OrderByNewest: true, // DESC so newest signals are not truncated
-			Schema:        w.schema,
+			WorkflowID:      w.id,
+			IncludeResolved: includeResolved,
+			Max:             scanLimit,
+			OrderByNewest:   true, // DESC so newest signals are not truncated
+			Schema:          w.schema,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("riverworkflow: WaitDiagnostics: load signals: %w", err)
