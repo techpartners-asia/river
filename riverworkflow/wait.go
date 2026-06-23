@@ -1,9 +1,12 @@
 package riverworkflow
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/riverqueue/river/riverworkflow/internal/waiteval"
 )
 
 // Wait term kinds.
@@ -81,9 +84,8 @@ type WaitSpec struct {
 	Expr  string         `json:"expr"`
 }
 
-// Validate performs structural validation. CEL syntax validation of
-// Expr and term CELExpr is deferred to Checkpoint 2 (waiteval).
-// PARITY: CEL-syntax check pending.
+// Validate performs structural validation and CEL syntax validation of Expr
+// and term CELExpr fields.
 func (s *WaitSpec) Validate() error {
 	if s.Expr == "" {
 		return ErrWaitExprEmpty
@@ -106,5 +108,34 @@ func (s *WaitSpec) Validate() error {
 			}
 		}
 	}
+	if _, err := waiteval.Compile(s.toEngineTerms(), s.Expr); err != nil {
+		return err
+	}
 	return nil
+}
+
+// toEngineTerms maps each WaitTermSpec to a waiteval.TermData for CEL
+// compilation and evaluation.
+func (s *WaitSpec) toEngineTerms() []waiteval.TermData {
+	terms := make([]waiteval.TermData, len(s.Terms))
+	for i, t := range s.Terms {
+		terms[i] = waiteval.TermData{
+			Name:     t.Name,
+			Kind:     t.Kind,
+			Key:      t.Key,
+			CELExpr:  t.CELExpr,
+			HasTimer: t.Timer != nil,
+		}
+	}
+	return terms
+}
+
+// parseWaitSpec unmarshals the metadata JSON back into a *WaitSpec,
+// round-tripping the json tags defined on WaitSpec and WaitTermSpec.
+func parseWaitSpec(raw []byte) (*WaitSpec, error) {
+	var s WaitSpec
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, fmt.Errorf("riverworkflow: parse wait spec: %w", err)
+	}
+	return &s, nil
 }

@@ -1,6 +1,7 @@
 package riverworkflow
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -56,4 +57,32 @@ func TestWaitTermBuilders(t *testing.T) {
 	require.Equal(t, WaitTermKindTimer, tim.Kind)
 	require.NotNil(t, tim.Timer)
 	require.Equal(t, TimerKindAt, tim.Timer.Kind)
+}
+
+func TestWaitSpecValidateRejectsBadCEL(t *testing.T) {
+	s := &WaitSpec{Terms: []WaitTermSpec{WaitTerm("a", "1 +")}, Expr: "a"}
+	if err := s.Validate(); err == nil {
+		t.Fatal("expected CEL syntax error from Validate")
+	}
+}
+
+func TestWaitSpecValidateRejectsUnknownTermInExpr(t *testing.T) {
+	s := &WaitSpec{Terms: []WaitTermSpec{WaitTerm("a", "true")}, Expr: "a && ghost"}
+	if err := s.Validate(); err == nil {
+		t.Fatal("expected error for undefined term 'ghost' in Expr")
+	}
+}
+
+func TestParseWaitSpecRoundTrip(t *testing.T) {
+	orig := &WaitSpec{
+		Terms: []WaitTermSpec{WaitTermSignal("ok", "approved", "payload.ok")},
+		Expr:  "ok",
+	}
+	raw, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got, err := parseWaitSpec(raw)
+	require.NoError(t, err)
+	require.Equal(t, orig.Expr, got.Expr)
+	require.Len(t, got.Terms, 1)
+	require.Equal(t, "approved", got.Terms[0].Key)
 }
