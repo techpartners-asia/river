@@ -50,6 +50,11 @@ const (
 	// workflow task depends on.
 	MetadataKeyWorkflowDeps = "river:workflow_deps"
 
+	// MetadataKeyWorkflowWait holds the JSON-serialized WaitSpec for a task.
+	// A task carrying this key is held pending by the dep-promotion SQL and
+	// promoted only by the workflow scheduler once its wait resolves.
+	MetadataKeyWorkflowWait = "river:workflow_wait"
+
 	// MetadataKeyWorkflowID identifies the workflow a task belongs to.
 	MetadataKeyWorkflowID = "river:workflow_id"
 
