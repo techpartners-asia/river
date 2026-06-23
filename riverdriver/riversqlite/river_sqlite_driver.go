@@ -623,6 +623,14 @@ func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.
 	return filtered, nil
 }
 
+func (e *Executor) JobGetWorkflowWaitTasks(ctx context.Context, params *riverdriver.JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobGetWorkflowWaitTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, int64(params.Max))
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
 func (e *Executor) JobInsertFastMany(ctx context.Context, params *riverdriver.JobInsertFastManyParams) ([]*riverdriver.JobInsertFastResult, error) {
 	var (
 		insertRes = make([]*riverdriver.JobInsertFastResult, len(params.Jobs))

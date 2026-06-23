@@ -738,6 +738,17 @@ WHERE metadata->>'river:workflow_id' = @workflow_id::text
   )
 ORDER BY id;
 
+-- Returns pending tasks that carry the river:workflow_wait metadata key.
+-- Used by the workflow scheduler's evaluateWaits pass (dialect-correct alternative
+-- to the raw `metadata ? 'key'` Postgres-only operator).
+-- name: JobGetWorkflowWaitTasks :many
+SELECT *
+FROM /* TEMPLATE: schema */river_job
+WHERE state = 'pending'::/* TEMPLATE: schema */river_job_state
+  AND metadata ? 'river:workflow_wait'
+ORDER BY id
+LIMIT @max::int;
+
 -- name: JobCancelWorkflow :many
 WITH locked AS (
   SELECT id, queue, state

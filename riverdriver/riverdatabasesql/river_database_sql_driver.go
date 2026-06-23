@@ -391,6 +391,14 @@ func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.
 	return sliceutil.MapError(jobs, jobRowFromInternal)
 }
 
+func (e *Executor) JobGetWorkflowWaitTasks(ctx context.Context, params *riverdriver.JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobGetWorkflowWaitTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, int32(min(params.Max, math.MaxInt32))) //nolint:gosec
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
 func (e *Executor) JobInsertFastMany(ctx context.Context, params *riverdriver.JobInsertFastManyParams) ([]*riverdriver.JobInsertFastResult, error) {
 	insertJobsParams := &dbsqlc.JobInsertFastManyParams{
 		ID:           make([]int64, len(params.Jobs)),

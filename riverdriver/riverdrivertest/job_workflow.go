@@ -397,6 +397,59 @@ func exerciseJobApplyWorkflowWait[TTx any](ctx context.Context, t *testing.T, ex
 	})
 }
 
+func exerciseJobGetWorkflowWaitTasks[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
+	t.Helper()
+
+	setup := func(ctx context.Context, t *testing.T) riverdriver.Executor {
+		t.Helper()
+		exec, _ := executorWithTx(ctx, t)
+		return exec
+	}
+
+	t.Run("JobGetWorkflowWaitTasks", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("ReturnsPendingWaitTasks", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+
+			workflowID := "wf-wait-list"
+
+			// A pending task WITH the river:workflow_wait key — must be returned.
+			waitTask := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "wait",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"terms":[],"expr":"true"}`),
+			})
+
+			// A pending task WITHOUT the river:workflow_wait key — must NOT be returned.
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "no-wait",
+				State:      rivertype.JobStatePending,
+			})
+
+			// A non-pending task WITH the river:workflow_wait key — must NOT be returned.
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "wait-available",
+				State:      rivertype.JobStateAvailable,
+				Wait:       json.RawMessage(`{"terms":[],"expr":"true"}`),
+			})
+
+			rows, err := exec.JobGetWorkflowWaitTasks(ctx, &riverdriver.JobGetWorkflowWaitTasksParams{
+				Max: 100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 1, "only the pending wait-bearing task must be returned")
+			require.Equal(t, waitTask.ID, rows[0].ID)
+			require.Equal(t, rivertype.JobStatePending, rows[0].State)
+		})
+	})
+}
+
 func exerciseJobUpdateWorkflowReady[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
 	t.Helper()
 

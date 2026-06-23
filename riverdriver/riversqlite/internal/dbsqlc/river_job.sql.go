@@ -965,6 +965,61 @@ func (q *Queries) JobGetWorkflowTasks(ctx context.Context, db DBTX, workflowID s
 	return items, nil
 }
 
+const jobGetWorkflowWaitTasks = `-- name: JobGetWorkflowWaitTasks :many
+SELECT id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+FROM /* TEMPLATE: schema */river_job
+WHERE state = 'pending'
+  AND json_extract(metadata, '$."river:workflow_wait"') IS NOT NULL
+ORDER BY id
+LIMIT ?1
+`
+
+// Returns pending tasks that carry the river:workflow_wait metadata key.
+// Uses json_extract (dialect-correct for SQLite) instead of the Postgres-only
+// `metadata ? 'key'` jsonb operator. Mirrors the skip-clause in
+// JobClassifyWorkflowReady: json_extract IS NOT NULL <=> key present.
+func (q *Queries) JobGetWorkflowWaitTasks(ctx context.Context, db DBTX, max int64) ([]*RiverJob, error) {
+	rows, err := db.QueryContext(ctx, jobGetWorkflowWaitTasks, max)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*RiverJob
+	for rows.Next() {
+		var i RiverJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.Args,
+			&i.Attempt,
+			&i.AttemptedAt,
+			&i.AttemptedBy,
+			&i.CreatedAt,
+			&i.Errors,
+			&i.FinalizedAt,
+			&i.Kind,
+			&i.MaxAttempts,
+			&i.Metadata,
+			&i.Priority,
+			&i.Queue,
+			&i.State,
+			&i.ScheduledAt,
+			&i.Tags,
+			&i.UniqueKey,
+			&i.UniqueStates,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const jobInsertFast = `-- name: JobInsertFast :one
 INSERT INTO /* TEMPLATE: schema */river_job(
     id,

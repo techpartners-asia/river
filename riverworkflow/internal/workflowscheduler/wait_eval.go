@@ -58,17 +58,14 @@ type programCacheEntry struct {
 func (s *WorkflowScheduler) evaluateWaits(ctx context.Context, progCache map[[32]byte]*programCacheEntry) error {
 	now := s.Time.Now().UTC()
 
-	// List pending wait-bearing tasks. The `metadata ? 'key'` operator works
-	// on Postgres (jsonb). This mirrors cancelExpiredWorkflows which also uses
-	// the `metadata ? '...'` form.
-	whereClause := "state = 'pending' AND metadata ? '" + rivercommon.MetadataKeyWorkflowWait + "'"
-
+	// List pending wait-bearing tasks using the dialect-correct driver method.
+	// Previously this used JobList with a raw `metadata ? 'key'` Postgres-only
+	// jsonb operator, which caused SQLite to treat `?` as a positional bind
+	// placeholder and error every tick, hanging all wait-bearing tasks.
 	iterCtx, cancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
-	rows, err := s.exec.JobList(iterCtx, &riverdriver.JobListParams{
-		Max:           int32(s.config.BatchSize),
-		OrderByClause: "id",
-		Schema:        s.config.Schema,
-		WhereClause:   whereClause,
+	rows, err := s.exec.JobGetWorkflowWaitTasks(iterCtx, &riverdriver.JobGetWorkflowWaitTasksParams{
+		Max:    s.config.BatchSize,
+		Schema: s.config.Schema,
 	})
 	cancel()
 	if err != nil {

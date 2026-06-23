@@ -616,6 +616,18 @@ FROM /* TEMPLATE: schema */river_job
 WHERE json_extract(metadata, '$."river:workflow_id"') = cast(@workflow_id AS text)
 ORDER BY id;
 
+-- Returns pending tasks that carry the river:workflow_wait metadata key.
+-- Uses json_extract (dialect-correct for SQLite) instead of the Postgres-only
+-- `metadata ? 'key'` jsonb operator. Mirrors the skip-clause in
+-- JobClassifyWorkflowReady: json_extract IS NOT NULL <=> key present.
+-- name: JobGetWorkflowWaitTasks :many
+SELECT *
+FROM /* TEMPLATE: schema */river_job
+WHERE state = 'pending'
+  AND json_extract(metadata, '$."river:workflow_wait"') IS NOT NULL
+ORDER BY id
+LIMIT @max;
+
 -- name: JobRetryWorkflow :many
 UPDATE /* TEMPLATE: schema */river_job
 SET state = CASE

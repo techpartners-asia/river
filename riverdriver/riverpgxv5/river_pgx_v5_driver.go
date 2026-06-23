@@ -224,7 +224,7 @@ func (e *Executor) JobCancelWorkflow(ctx context.Context, params *riverdriver.Jo
 		CancelAttemptedAt: cancelledAt,
 		ControlTopic:      params.ControlTopic,
 		Now:               params.Now,
-		Reason:             params.Reason,
+		Reason:            params.Reason,
 		Schema:            pgtype.Text{String: params.Schema, Valid: params.Schema != ""},
 		WorkflowID:        params.WorkflowID,
 	})
@@ -388,6 +388,14 @@ func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.
 		WorkflowID: params.WorkflowID,
 		TaskNames:  taskNames,
 	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
+func (e *Executor) JobGetWorkflowWaitTasks(ctx context.Context, params *riverdriver.JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobGetWorkflowWaitTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, int32(min(params.Max, math.MaxInt32))) //nolint:gosec
 	if err != nil {
 		return nil, interpretError(err)
 	}

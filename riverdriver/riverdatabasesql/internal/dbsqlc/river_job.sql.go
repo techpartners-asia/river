@@ -868,6 +868,60 @@ func (q *Queries) JobGetWorkflowTasks(ctx context.Context, db DBTX, arg *JobGetW
 	return items, nil
 }
 
+const jobGetWorkflowWaitTasks = `-- name: JobGetWorkflowWaitTasks :many
+SELECT id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+FROM /* TEMPLATE: schema */river_job
+WHERE state = 'pending'::/* TEMPLATE: schema */river_job_state
+  AND metadata ? 'river:workflow_wait'
+ORDER BY id
+LIMIT $1::int
+`
+
+// Returns pending tasks that carry the river:workflow_wait metadata key.
+// Used by the workflow scheduler's evaluateWaits pass (dialect-correct alternative
+// to the raw `metadata ? 'key'` Postgres-only operator).
+func (q *Queries) JobGetWorkflowWaitTasks(ctx context.Context, db DBTX, max int32) ([]*RiverJob, error) {
+	rows, err := db.QueryContext(ctx, jobGetWorkflowWaitTasks, max)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*RiverJob
+	for rows.Next() {
+		var i RiverJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.Args,
+			&i.Attempt,
+			&i.AttemptedAt,
+			pq.Array(&i.AttemptedBy),
+			&i.CreatedAt,
+			pq.Array(&i.Errors),
+			&i.FinalizedAt,
+			&i.Kind,
+			&i.MaxAttempts,
+			&i.Metadata,
+			&i.Priority,
+			&i.Queue,
+			&i.State,
+			&i.ScheduledAt,
+			pq.Array(&i.Tags),
+			&i.UniqueKey,
+			&i.UniqueStates,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const jobInsertFastMany = `-- name: JobInsertFastMany :many
 WITH raw_job_data AS (
     SELECT
