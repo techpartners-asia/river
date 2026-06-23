@@ -5,8 +5,10 @@ package waiteval
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 )
 
 // TermData is the engine's decoupled view of a wait term. Task 3 maps from
@@ -25,12 +27,26 @@ type DepView struct {
 	State  string
 }
 
+// SignalView is the engine's full view of a received signal. It carries the
+// payload alongside metadata supplied by the scheduler.
+//
+// created_at is exposed to CEL as a google.protobuf.Timestamp (cel.TimestampType)
+// by passing time.Time directly; cel-go's default type adapter maps time.Time to
+// that type automatically.
+type SignalView struct {
+	Payload   any
+	Attempt   int
+	CreatedAt time.Time
+	ID        int64
+	Source    string
+}
+
 // Inputs holds the runtime state that the engine evaluates against.
 // The scheduler computes timer fire state before calling Evaluate; this engine
 // reads results, it does not compute them.
 type Inputs struct {
-	Timers   map[string]bool // keyed by term name
-	Signals  map[string]any  // keyed by signal key
+	Timers   map[string]bool       // keyed by term name
+	Signals  map[string]SignalView // keyed by signal key
 	Deps     map[string]DepView
 	Workflow map[string]any
 }
@@ -58,29 +74,45 @@ func buildBaseEnv() (*cel.Env, error) {
 }
 
 // buildSignalEnv constructs the CEL environment for signal sub-expressions.
+// Variables available to signal CEL expressions:
+//   - payload    (dyn)       — the signal's raw payload value
+//   - attempt    (int)       — delivery attempt number
+//   - created_at (timestamp) — when the signal was created; exposed as
+//     google.protobuf.Timestamp via cel-go's time.Time adapter
+//   - id         (int)       — signal row ID
+//   - source     (string)    — originating source label
 func buildSignalEnv() (*cel.Env, error) {
-	// PARITY: full signal metadata wired in CP3 (attempt, created_at, id, source)
 	return cel.NewEnv(
 		cel.Variable("payload", cel.DynType),
 		cel.Variable("attempt", cel.IntType),
-		cel.Variable("created_at", cel.StringType),
-		cel.Variable("id", cel.StringType),
+		cel.Variable("created_at", cel.TimestampType),
+		cel.Variable("id", cel.IntType),
 		cel.Variable("source", cel.StringType),
 	)
 }
 
 // compileExpr compiles a CEL expression in the given environment and returns a
-// ready-to-evaluate Program or an error.
-func compileExpr(env *cel.Env, expr string) (cel.Program, error) {
+// ready-to-evaluate Program, the compiled AST (for output-type inspection), or an error.
+func compileExpr(env *cel.Env, expr string) (cel.Program, *cel.Ast, error) {
 	ast, iss := env.Compile(expr)
 	if iss != nil && iss.Err() != nil {
-		return nil, iss.Err()
+		return nil, nil, iss.Err()
 	}
 	prg, err := env.Program(ast)
 	if err != nil {
-		return nil, fmt.Errorf("waiteval: program construction: %w", err)
+		return nil, nil, fmt.Errorf("waiteval: program construction: %w", err)
 	}
-	return prg, nil
+	return prg, ast, nil
+}
+
+// isBoolOrDynOutputType returns true if the compiled AST's output type is
+// bool or dyn. Field/index accesses on dyn variables yield dyn statically
+// (e.g. payload.ok is dyn, not bool), so we allow dyn through and rely on
+// runtime evaluation to catch non-bool payloads. We reject concretely-typed
+// non-bool output (e.g. int, string) to surface configuration errors early.
+func isBoolOrDynOutputType(ast *cel.Ast) bool {
+	k := ast.OutputType().Kind()
+	return k == types.BoolKind || k == types.DynKind
 }
 
 // evalBool evaluates a compiled program with the given activation and returns
@@ -133,18 +165,24 @@ func Compile(terms []TermData, expr string) (*Program, error) {
 
 		case "signal":
 			if td.CELExpr != "" {
-				prg, err := compileExpr(sigEnv, td.CELExpr)
+				prg, ast, err := compileExpr(sigEnv, td.CELExpr)
 				if err != nil {
 					return nil, fmt.Errorf("waiteval: compile signal term %q: %w", td.Name, err)
+				}
+				if !isBoolOrDynOutputType(ast) {
+					return nil, fmt.Errorf("waiteval: signal term %q: CEL sub-expression must return bool (got %s)", td.Name, ast.OutputType())
 				}
 				ct.subProg = prg
 			}
 
 		case "generic":
 			if td.CELExpr != "" {
-				prg, err := compileExpr(baseEnv, td.CELExpr)
+				prg, ast, err := compileExpr(baseEnv, td.CELExpr)
 				if err != nil {
 					return nil, fmt.Errorf("waiteval: compile generic term %q: %w", td.Name, err)
+				}
+				if !isBoolOrDynOutputType(ast) {
+					return nil, fmt.Errorf("waiteval: generic term %q: CEL sub-expression must return bool (got %s)", td.Name, ast.OutputType())
 				}
 				ct.subProg = prg
 			}
@@ -173,7 +211,7 @@ func Compile(terms []TermData, expr string) (*Program, error) {
 		return nil, fmt.Errorf("waiteval: build top-level env: %w", err)
 	}
 
-	topProg, err := compileExpr(topEnv, expr)
+	topProg, _, err := compileExpr(topEnv, expr)
 	if err != nil {
 		return nil, fmt.Errorf("waiteval: compile top-level expr: %w", err)
 	}
@@ -188,9 +226,9 @@ func Compile(terms []TermData, expr string) (*Program, error) {
 // expression with the term results. It is pure: no IO, no time.Now().
 func (p *Program) Evaluate(in Inputs) (bool, error) {
 	// Default nil maps to empty to avoid activation key-missing errors.
-	signals := in.Signals
-	if signals == nil {
-		signals = map[string]any{}
+	sigViews := in.Signals
+	if sigViews == nil {
+		sigViews = map[string]SignalView{}
 	}
 	timers := in.Timers
 	if timers == nil {
@@ -199,6 +237,15 @@ func (p *Program) Evaluate(in Inputs) (bool, error) {
 	workflow := in.Workflow
 	if workflow == nil {
 		workflow = map[string]any{}
+	}
+
+	// Build a payload-only signals map for use in the base/top-level CEL
+	// activation where expressions access signals["key"].field.  The value is
+	// the payload only (identical to CP2's map[string]any semantics) so that
+	// existing generic terms like signals["k"].ok continue to work correctly.
+	signalsPayload := make(map[string]any, len(sigViews))
+	for k, sv := range sigViews {
+		signalsPayload[k] = sv.Payload
 	}
 
 	// Convert Deps to map[string]any with lowercase field names for CEL access.
@@ -212,7 +259,7 @@ func (p *Program) Evaluate(in Inputs) (bool, error) {
 
 	// Build base activation for generic terms.
 	baseActivation := map[string]any{
-		"signals":  signals,
+		"signals":  signalsPayload,
 		"timers":   timers,
 		"deps":     deps,
 		"workflow": workflow,
@@ -230,7 +277,7 @@ func (p *Program) Evaluate(in Inputs) (bool, error) {
 
 		case "signal":
 			// Absence of the signal key means the signal has not yet been received.
-			sigVal, present := signals[ct.data.Key]
+			sv, present := sigViews[ct.data.Key]
 			if !present {
 				val = false
 			} else if ct.subProg == nil {
@@ -238,13 +285,15 @@ func (p *Program) Evaluate(in Inputs) (bool, error) {
 				// independent of the payload.
 				val = true
 			} else {
-				// PARITY: full signal metadata wired in CP3 (attempt, created_at, id, source)
+				// Bind full signal metadata into the sub-environment.
+				// created_at is passed as time.Time; cel-go's default adapter maps
+				// it to google.protobuf.Timestamp (cel.TimestampType).
 				sigActivation := map[string]any{
-					"payload":    sigVal,
-					"attempt":    int64(0),
-					"created_at": "",
-					"id":         "",
-					"source":     "",
+					"payload":    sv.Payload,
+					"attempt":    int64(sv.Attempt),
+					"created_at": sv.CreatedAt,
+					"id":         sv.ID,
+					"source":     sv.Source,
 				}
 				result, err := evalBool(ct.subProg, sigActivation)
 				if err != nil {
@@ -270,7 +319,7 @@ func (p *Program) Evaluate(in Inputs) (bool, error) {
 
 	// Build top-level activation: term name booleans + scope maps.
 	topActivation := map[string]any{
-		"signals":  signals,
+		"signals":  signalsPayload,
 		"timers":   timers,
 		"deps":     deps,
 		"workflow": workflow,

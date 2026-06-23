@@ -629,3 +629,111 @@ func TestSimulation_WaitCancelledOnFailedDep(t *testing.T) {
 	require.Contains(t, waiterMeta, rivercommon.MetadataKeyWorkflowWaitFailedReason,
 		"waiter should carry river:workflow_wait_failed_reason in metadata")
 }
+
+// TestSimulation_SignalGated verifies that a task gated by WaitTermSignal stays
+// pending until the signal is emitted, then promotes and executes.
+//
+// Workflow structure: task "a" (no deps, runs immediately) → task "b" depends
+// on "a" and is gated by a signal with key "approved" and CEL expression
+// "payload.ok". The scheduler must load the signal and promote "b" once the
+// signal is present.
+func TestSimulation_SignalGated(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
+	require.NoError(t, err)
+	defer dbPool.Close()
+
+	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+
+	w := &recordingWorker{mu: &sync.Mutex{}, dur: 0}
+	workers := river.NewWorkers()
+	river.AddWorker(workers, w)
+
+	client, err := riverworkflow.NewClient(riverpgxv5.New(dbPool), &riverworkflow.Config{
+		Config: river.Config{
+			Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}},
+			Schema:  schema,
+			Workers: workers,
+		},
+		WorkflowScheduler: riverworkflow.WorkflowSchedulerConfig{
+			Interval:                    100 * time.Millisecond,
+			WorkflowTimerPollerInterval: 50 * time.Millisecond,
+		},
+	})
+	require.NoError(t, err)
+
+	subscribeChan, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{Name: "signal-gated-test"})
+	a := wf.Add("a", recordingWorkerArgs{Task: "a"}, nil, nil)
+	wf.Add("b", recordingWorkerArgs{Task: "b"}, nil, &riverworkflow.WorkflowTaskOpts{
+		Deps: []string{a.Name},
+		Wait: &riverworkflow.WaitSpec{
+			Terms: []riverworkflow.WaitTermSpec{
+				riverworkflow.WaitTermSignal("approved", "approved", "payload.ok"),
+			},
+			Expr: "approved",
+		},
+	})
+
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	_, err = client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+
+	require.NoError(t, client.Start(ctx))
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		require.NoError(t, client.Stop(stopCtx))
+	}()
+
+	// Wait for task "a" to complete first.
+	timeout := time.After(15 * time.Second)
+	select {
+	case <-subscribeChan:
+		// task "a" completed
+	case <-timeout:
+		t.Fatal("timed out waiting for task a to complete")
+	}
+
+	// Poll briefly to confirm task "b" stays pending after "a" completes but
+	// before the signal is emitted (5 scheduler ticks at 100 ms each).
+	deadline := time.Now().Add(600 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		tasks, err := wf.LoadAll(ctx)
+		require.NoError(t, err)
+		bRow, err := tasks.Get("b")
+		require.NoError(t, err)
+		require.Equal(t, rivertype.JobStatePending, bRow.State,
+			"task b must remain pending before the signal is emitted")
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Emit the signal that unblocks task "b".
+	_, err = wf.Signals().Emit(ctx, "approved", map[string]any{"ok": true}, nil)
+	require.NoError(t, err)
+
+	// Now wait for task "b" to complete.
+	timeout2 := time.After(15 * time.Second)
+	select {
+	case <-subscribeChan:
+		// task "b" completed
+	case <-timeout2:
+		t.Fatal("timed out waiting for task b to complete after signal was emitted")
+	}
+
+	// Final assertion: both tasks completed.
+	tasks, err := wf.LoadAll(ctx)
+	require.NoError(t, err)
+	for _, name := range []string{"a", "b"} {
+		row, err := tasks.Get(name)
+		require.NoError(t, err)
+		require.Equal(t, rivertype.JobStateCompleted, row.State, "task %s should be completed", name)
+	}
+}

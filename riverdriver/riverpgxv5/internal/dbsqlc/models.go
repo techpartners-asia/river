@@ -127,3 +127,14 @@ type RiverQueue struct {
 	PausedAt  *time.Time
 	UpdatedAt time.Time
 }
+
+type RiverWorkflowSignal struct {
+	ID             int64
+	WorkflowID     string
+	SignalKey      string
+	Payload        []byte
+	IdempotencyKey pgtype.Text
+	Source         pgtype.Text
+	CreatedAt      time.Time
+	ResolvedAt     *time.Time
+}

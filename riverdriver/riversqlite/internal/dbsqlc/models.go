@@ -76,6 +76,17 @@ type RiverQueue struct {
 	UpdatedAt time.Time
 }
 
+type RiverWorkflowSignal struct {
+	ID             int64
+	WorkflowID     string
+	SignalKey      string
+	Payload        string
+	IdempotencyKey *string
+	Source         *string
+	CreatedAt      time.Time
+	ResolvedAt     *time.Time
+}
+
 type SqliteMaster struct {
 	Type     *string
 	Name     *string

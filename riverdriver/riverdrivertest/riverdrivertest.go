@@ -50,6 +50,7 @@ func Exercise[TTx any](ctx context.Context, t *testing.T,
 	exerciseLeader(ctx, t, executorWithTx)
 	exercisePeriodicJob(ctx, t, executorWithTx)
 	exerciseQueue(ctx, t, executorWithTx)
+	exerciseWorkflowSignal(ctx, t, executorWithTx)
 }
 
 const (
