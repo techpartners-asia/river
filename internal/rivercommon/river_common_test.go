@@ -18,6 +18,12 @@ func TestMetadataKeyWorkflow(t *testing.T) {
 	require.Equal(t, "river:workflow_ignore_deleted_deps", MetadataKeyWorkflowIgnoreDeletedDeps)
 }
 
+func TestMetadataKeyWorkflowWait(t *testing.T) {
+	if MetadataKeyWorkflowWait != "river:workflow_wait" {
+		t.Fatalf("unexpected key: %q", MetadataKeyWorkflowWait)
+	}
+}
+
 func TestJobKindRE(t *testing.T) {
 	t.Parallel()
 

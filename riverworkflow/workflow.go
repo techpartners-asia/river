@@ -58,6 +58,11 @@ type WorkflowTaskOpts struct {
 
 	// IgnoreDiscardedDeps overrides the workflow-level setting when non-nil.
 	IgnoreDiscardedDeps *bool
+
+	// Wait gates this task behind a CEL expression over signals, timers, and
+	// dependency outputs. A wait-bearing task stays pending until the workflow
+	// scheduler resolves the wait, independent of dependency completion.
+	Wait *WaitSpec
 }
 
 // WorkflowTask is a handle to a task added to a workflow. The Name field can
@@ -71,6 +76,7 @@ type WorkflowTask struct {
 	ignoreDeleted   *bool
 	ignoreDiscarded *bool
 	jobOpts         *river.InsertOpts
+	wait            *WaitSpec
 }
 
 // Workflow is a builder for a directed acyclic graph of River jobs. Tasks are
@@ -96,16 +102,18 @@ func (w *Workflow[TTx]) Name() string { return w.name }
 // workflow. taskOpts may be nil for tasks with no dependencies.
 func (w *Workflow[TTx]) Add(taskName string, args river.JobArgs, jobOpts *river.InsertOpts, taskOpts *WorkflowTaskOpts) *WorkflowTask {
 	var (
-		deps    []string
-		igC     *bool
-		igDc    *bool
-		igDe    *bool
+		deps []string
+		igC  *bool
+		igDc *bool
+		igDe *bool
+		wait *WaitSpec
 	)
 	if taskOpts != nil {
 		deps = append([]string(nil), taskOpts.Deps...)
 		igC = taskOpts.IgnoreCancelledDeps
 		igDc = taskOpts.IgnoreDiscardedDeps
 		igDe = taskOpts.IgnoreDeletedDeps
+		wait = taskOpts.Wait
 	}
 
 	task := &WorkflowTask{
@@ -116,6 +124,7 @@ func (w *Workflow[TTx]) Add(taskName string, args river.JobArgs, jobOpts *river.
 		ignoreDeleted:   igDe,
 		ignoreDiscarded: igDc,
 		jobOpts:         jobOpts,
+		wait:            wait,
 	}
 	w.tasks = append(w.tasks, task)
 	return task
@@ -196,6 +205,10 @@ func (w *Workflow[TTx]) renderTaskOpts(t *WorkflowTask) (*river.InsertOpts, erro
 		inject(rivercommon.MetadataKeyWorkflowDeps, t.deps)
 		opts.Pending = true
 	}
+	if t.wait != nil {
+		inject(rivercommon.MetadataKeyWorkflowWait, t.wait)
+		opts.Pending = true
+	}
 
 	applyIgnore := func(taskFlag *bool, workflowFlag bool, key string) {
 		switch {
@@ -233,6 +246,11 @@ func (w *Workflow[TTx]) validate() error {
 			return fmt.Errorf("%w: %q", ErrWorkflowTaskNameDuplicate, t.Name)
 		}
 		byName[t.Name] = t
+		if t.wait != nil {
+			if err := t.wait.Validate(); err != nil {
+				return fmt.Errorf("task %q: %w", t.Name, err)
+			}
+		}
 	}
 
 	// Deduplicate each task's dependency list. The readiness classifier counts

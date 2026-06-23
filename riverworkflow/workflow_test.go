@@ -184,3 +184,31 @@ func TestWorkflow_Prepare_PreservesExistingMetadata(t *testing.T) {
 	require.Equal(t, "user_value", meta["user_key"])
 	require.Equal(t, w.ID(), meta[rivercommon.MetadataKeyWorkflowID])
 }
+
+func TestWorkflowWaitMetadata(t *testing.T) {
+	w := newWorkflow[any](&WorkflowOpts{ID: "wf-wait"}, nil, "")
+	w.Add("gate", sortArgs{}, nil, &WorkflowTaskOpts{
+		Wait: &WaitSpec{
+			Terms: []WaitTermSpec{WaitTermSignal("ok", "ok", "payload.ok")},
+			Expr:  "ok",
+		},
+	})
+
+	res, err := w.Prepare(context.Background())
+	require.NoError(t, err)
+	job := res.Jobs[0]
+	require.NotNil(t, job.InsertOpts)
+	require.True(t, job.InsertOpts.Pending, "wait-bearing task must be Pending")
+	var meta map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(job.InsertOpts.Metadata, &meta))
+	require.Contains(t, meta, rivercommon.MetadataKeyWorkflowWait)
+}
+
+func TestWorkflowWaitInvalidRejected(t *testing.T) {
+	w := newWorkflow[any](&WorkflowOpts{ID: "wf-bad"}, nil, "")
+	w.Add("gate", sortArgs{}, nil, &WorkflowTaskOpts{
+		Wait: &WaitSpec{Terms: []WaitTermSpec{WaitTerm("a", "true")}, Expr: ""},
+	})
+	_, err := w.Prepare(context.Background())
+	require.ErrorIs(t, err, ErrWaitExprEmpty)
+}
