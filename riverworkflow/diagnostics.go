@@ -53,7 +53,11 @@ type WaitTermDiagnostic struct {
 // Note: [WaitPhaseResolved] means the wait expression evaluated to true, not
 // that the task will be promoted. The workflow scheduler also requires all
 // declared dependencies to be satisfied before promoting a task; this snapshot
-// only reflects the wait-expression layer.
+// only reflects the wait-expression layer. In particular, a task whose
+// dependency has failed (cancelled/discarded without the corresponding ignore
+// flag) is cancelled by the scheduler, yet WaitDiagnostics may still report
+// [WaitPhaseResolved] if its wait expression is independently satisfied — the
+// snapshot does not classify dependency state.
 type WaitDiagnostics struct {
 	// Phase is the high-level resolution state.
 	Phase WaitPhase
