@@ -246,10 +246,83 @@ func (s *WorkflowScheduler) processWaitTask(
 		}
 	}
 
+	// Load signals for this workflow and build the per-key view. We load all
+	// signals (up to the scan limit) and keep only the latest per key, defined
+	// as the row with the greatest (created_at, id). WorkflowSignalList
+	// returns rows ordered (created_at, id) ASC, so the last element for each
+	// key is the newest; we nevertheless track the explicit maximum for
+	// robustness against future ordering changes.
+	//
+	// PARITY: Attempt = number of signals emitted for the key (count), inferred.
+	signalScanMax := s.config.SignalScanLimit
+	if signalScanMax <= 0 {
+		signalScanMax = SignalScanLimitDefault
+	}
+	iterCtx2, cancel2 := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
+	rawSignals, signalErr := s.exec.WorkflowSignalList(iterCtx2, &riverdriver.WorkflowSignalListParams{
+		WorkflowID: workflowID,
+		Max:        signalScanMax,
+		Schema:     s.config.Schema,
+	})
+	cancel2()
+	if signalErr != nil {
+		s.Logger.WarnContext(ctx, s.Name+": evaluateWaits: failed to load signals",
+			slog.Int64("job_id", row.ID),
+			slog.String("workflow_id", workflowID),
+			slog.String("error", signalErr.Error()))
+		// Non-fatal: proceed with an empty signal map so timer/dep conditions
+		// can still be evaluated; signal-gated terms will remain unresolved.
+		rawSignals = nil
+	}
+
+	// Build the signals view: latest signal per key + count per key.
+	type keyState struct {
+		latest *rivertype.WorkflowSignal
+		count  int
+	}
+	keyMap := make(map[string]*keyState)
+	for _, sig := range rawSignals {
+		ks, ok := keyMap[sig.SignalKey]
+		if !ok {
+			ks = &keyState{}
+			keyMap[sig.SignalKey] = ks
+		}
+		ks.count++
+		if ks.latest == nil ||
+			sig.CreatedAt.After(ks.latest.CreatedAt) ||
+			(sig.CreatedAt.Equal(ks.latest.CreatedAt) && sig.ID > ks.latest.ID) {
+			ks.latest = sig
+		}
+	}
+
+	signalViews := make(map[string]waiteval.SignalView, len(keyMap))
+	for key, ks := range keyMap {
+		var payloadAny any
+		if len(ks.latest.Payload) > 0 {
+			if err := json.Unmarshal(ks.latest.Payload, &payloadAny); err != nil {
+				s.Logger.WarnContext(ctx, s.Name+": evaluateWaits: failed to unmarshal signal payload",
+					slog.String("signal_key", key),
+					slog.String("error", err.Error()))
+				payloadAny = nil
+			}
+		}
+		var source string
+		if ks.latest.Source != nil {
+			source = *ks.latest.Source
+		}
+		signalViews[key] = waiteval.SignalView{
+			Payload:   payloadAny,
+			Attempt:   ks.count,
+			CreatedAt: ks.latest.CreatedAt,
+			ID:        ks.latest.ID,
+			Source:    source,
+		}
+	}
+
 	// Build Inputs: resolve timers and build deps view.
 	inputs := waiteval.Inputs{
 		Timers:  make(map[string]bool),
-		Signals: map[string]any{}, // CP3: signals not implemented yet
+		Signals: signalViews,
 		Deps:    make(map[string]waiteval.DepView),
 	}
 

@@ -31,6 +31,10 @@ const IntervalDefault = 5 * time.Second
 // the scheduler will process per tick.
 const BatchSizeDefault = 1000
 
+// SignalScanLimitDefault is the default maximum number of signals loaded per
+// workflow per evaluateWaits tick.
+const SignalScanLimitDefault = 10_000
+
 // Config configures a [WorkflowScheduler].
 type Config struct {
 	BatchSize int
@@ -42,6 +46,10 @@ type Config struct {
 	// standard Interval. When > 0, the scheduler runs at
 	// min(Interval, TimerPollerInterval). Defaults to 0 (disabled; use Interval).
 	TimerPollerInterval time.Duration
+
+	// SignalScanLimit caps the number of signals loaded per workflow per tick
+	// when evaluating signal-gated wait tasks. Defaults to SignalScanLimitDefault.
+	SignalScanLimit int
 }
 
 // TestSignals exposes signals used by tests to wait for scheduler activity.
@@ -76,6 +84,7 @@ func New(archetype *baseservice.Archetype, config *Config, exec riverdriver.Exec
 			Interval:            cmp.Or(config.Interval, IntervalDefault),
 			Schema:              config.Schema,
 			TimerPollerInterval: config.TimerPollerInterval,
+			SignalScanLimit:     cmp.Or(config.SignalScanLimit, SignalScanLimitDefault),
 		},
 		exec:      exec,
 		progCache: make(map[[32]byte]*programCacheEntry),

@@ -43,6 +43,7 @@ func NewClient[TTx any](driver riverdriver.Driver[TTx], config *Config) (*Client
 			BatchSize:           config.WorkflowScheduler.BatchSize,
 			Interval:            config.WorkflowScheduler.Interval,
 			Schema:              config.Schema,
+			SignalScanLimit:     config.WorkflowScheduler.SignalScanLimit,
 			TimerPollerInterval: config.WorkflowScheduler.WorkflowTimerPollerInterval,
 		},
 	}
