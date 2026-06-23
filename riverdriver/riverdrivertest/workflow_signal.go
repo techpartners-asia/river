@@ -46,6 +46,7 @@ func exerciseWorkflowSignal[TTx any](ctx context.Context, t *testing.T, executor
 			require.Positive(t, sig.ID)
 			require.Equal(t, "wf-001", sig.WorkflowID)
 			require.Equal(t, "order.ready", sig.SignalKey)
+			require.JSONEq(t, `{"item":"widget"}`, string(sig.Payload))
 			require.WithinDuration(t, now, sig.CreatedAt, bundle.driver.TimePrecision())
 			require.Nil(t, sig.IdempotencyKey)
 			require.Nil(t, sig.ResolvedAt)
