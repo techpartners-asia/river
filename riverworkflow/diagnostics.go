@@ -49,6 +49,11 @@ type WaitTermDiagnostic struct {
 // WaitDiagnostics is a read-only snapshot of a task's wait expression
 // evaluation. Returned by [Workflow.WaitDiagnostics] and
 // [Workflow.WaitDiagnosticsTx].
+//
+// Note: [WaitPhaseResolved] means the wait expression evaluated to true, not
+// that the task will be promoted. The workflow scheduler also requires all
+// declared dependencies to be satisfied before promoting a task; this snapshot
+// only reflects the wait-expression layer.
 type WaitDiagnostics struct {
 	// Phase is the high-level resolution state.
 	Phase WaitPhase
