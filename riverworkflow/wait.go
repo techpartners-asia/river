@@ -33,7 +33,7 @@ var (
 type TimerSpec struct {
 	Name        string        `json:"name"`
 	Kind        string        `json:"kind"`
-	At          time.Time     `json:"at,omitempty"`            // TimerKindAt
+	At          time.Time     `json:"at,omitzero"`             // TimerKindAt
 	Dur         time.Duration `json:"dur,omitempty"`           // relative kinds
 	DepTaskName string        `json:"dep_task_name,omitempty"` // TimerKindAfterTaskFinalized
 }
