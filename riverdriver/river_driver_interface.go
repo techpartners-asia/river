@@ -208,12 +208,14 @@ type Executor interface {
 	JobDelete(ctx context.Context, params *JobDeleteParams) (*rivertype.JobRow, error)
 	JobDeleteBefore(ctx context.Context, params *JobDeleteBeforeParams) (int, error)
 	JobDeleteMany(ctx context.Context, params *JobDeleteManyParams) ([]*rivertype.JobRow, error)
+	JobApplyWorkflowWait(ctx context.Context, params *JobApplyWorkflowWaitParams) (*rivertype.JobRow, error)
 	JobGetAvailable(ctx context.Context, params *JobGetAvailableParams) ([]*rivertype.JobRow, error)
 	JobGetByID(ctx context.Context, params *JobGetByIDParams) (*rivertype.JobRow, error)
 	JobGetByIDMany(ctx context.Context, params *JobGetByIDManyParams) ([]*rivertype.JobRow, error)
 	JobGetByKindMany(ctx context.Context, params *JobGetByKindManyParams) ([]*rivertype.JobRow, error)
 	JobGetStuck(ctx context.Context, params *JobGetStuckParams) ([]*rivertype.JobRow, error)
 	JobGetWorkflowTasks(ctx context.Context, params *JobGetWorkflowTasksParams) ([]*rivertype.JobRow, error)
+	JobGetWorkflowWaitTasks(ctx context.Context, params *JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error)
 	JobInsertFastMany(ctx context.Context, params *JobInsertFastManyParams) ([]*JobInsertFastResult, error)
 	JobInsertFastManyNoReturning(ctx context.Context, params *JobInsertFastManyParams) (int, error)
 	JobInsertFull(ctx context.Context, params *JobInsertFullParams) (*rivertype.JobRow, error)
@@ -373,10 +375,10 @@ type JobCancelParams struct {
 type JobCancelWorkflowParams struct {
 	CancelAttemptedAt time.Time
 	ControlTopic      string
-	Schema     string
-	WorkflowID string
-	Now        time.Time
-	Reason     string
+	Schema            string
+	WorkflowID        string
+	Now               time.Time
+	Reason            string
 }
 
 type JobCountByAllStatesParams struct {
@@ -450,6 +452,15 @@ type JobGetByKindManyParams struct {
 	Schema string
 }
 
+// JobApplyWorkflowWaitParams are parameters for applying a promote or cancel
+// outcome to a single pending workflow wait task.
+type JobApplyWorkflowWaitParams struct {
+	ID      int64
+	Now     time.Time
+	Outcome string // "promote" | "cancel"
+	Schema  string
+}
+
 type JobGetStuckParams struct {
 	Max          int
 	Schema       string
@@ -462,6 +473,15 @@ type JobGetWorkflowTasksParams struct {
 	Schema     string
 	WorkflowID string
 	TaskNames  []string // optional filter; empty means "all tasks"
+}
+
+// JobGetWorkflowWaitTasksParams are parameters for listing pending workflow
+// tasks that carry the river:workflow_wait metadata key. The query is
+// dialect-correct for all drivers (no Postgres-only ? operator).
+type JobGetWorkflowWaitTasksParams struct {
+	AfterID int64
+	Max     int
+	Schema  string
 }
 
 type JobInsertFastParams struct {

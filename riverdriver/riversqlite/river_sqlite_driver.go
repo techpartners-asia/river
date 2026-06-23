@@ -475,6 +475,60 @@ var jobGetAvailableAttemptedBySQL = strings.TrimSpace(`
     )
 `)
 
+func (e *Executor) JobApplyWorkflowWait(ctx context.Context, params *riverdriver.JobApplyWorkflowWaitParams) (*rivertype.JobRow, error) {
+	if params.Outcome != "promote" && params.Outcome != "cancel" {
+		return nil, fmt.Errorf("riverdriver: JobApplyWorkflowWait: unknown outcome %q (must be \"promote\" or \"cancel\")", params.Outcome)
+	}
+	return dbutil.WithTxV(ctx, e, func(ctx context.Context, execTx riverdriver.ExecutorTx) (*rivertype.JobRow, error) {
+		dbtx := templateReplaceWrapper{dbtx: e.driver.UnwrapTx(execTx), replacer: &e.driver.replacer}
+		queries := dbsqlc.New()
+		nowStr := timeString(params.Now)
+		schemaCtx := schemaTemplateParam(ctx, params.Schema)
+
+		if params.Outcome == "cancel" {
+			job, err := queries.JobApplyWorkflowWaitCancel(schemaCtx, dbtx, &dbsqlc.JobApplyWorkflowWaitCancelParams{
+				ID:  params.ID,
+				Now: nowStr,
+			})
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, rivertype.ErrNotFound
+				}
+				return nil, interpretError(err)
+			}
+			return jobRowFromInternal(job)
+		}
+
+		// promote: determine scheduled vs available by reading scheduled_at first.
+		existing, err := execTx.JobGetByID(ctx, &riverdriver.JobGetByIDParams{ID: params.ID, Schema: params.Schema})
+		if err != nil {
+			return nil, interpretError(err)
+		}
+		// If no longer pending, return not found (consistent with Postgres ErrNoRows behavior).
+		if existing.State != rivertype.JobStatePending {
+			return nil, rivertype.ErrNotFound
+		}
+
+		newState := "available"
+		if existing.ScheduledAt.After(params.Now) {
+			newState = "scheduled"
+		}
+
+		job, err := queries.JobApplyWorkflowWaitPromote(schemaCtx, dbtx, &dbsqlc.JobApplyWorkflowWaitPromoteParams{
+			ID:       params.ID,
+			NewState: newState,
+			Now:      nowStr,
+		})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, rivertype.ErrNotFound
+			}
+			return nil, interpretError(err)
+		}
+		return jobRowFromInternal(job)
+	})
+}
+
 func (e *Executor) JobGetAvailable(ctx context.Context, params *riverdriver.JobGetAvailableParams) ([]*rivertype.JobRow, error) {
 	ctx = sqlctemplate.WithReplacements(ctx, map[string]sqlctemplate.Replacement{
 		"attempted_by_clause": {
@@ -567,6 +621,17 @@ func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.
 		}
 	}
 	return filtered, nil
+}
+
+func (e *Executor) JobGetWorkflowWaitTasks(ctx context.Context, params *riverdriver.JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobGetWorkflowWaitTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowWaitTasksParams{
+		AfterID: params.AfterID,
+		Max:     int64(params.Max),
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
 }
 
 func (e *Executor) JobInsertFastMany(ctx context.Context, params *riverdriver.JobInsertFastManyParams) ([]*riverdriver.JobInsertFastResult, error) {

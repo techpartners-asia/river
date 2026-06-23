@@ -738,6 +738,20 @@ WHERE metadata->>'river:workflow_id' = @workflow_id::text
   )
 ORDER BY id;
 
+-- Returns pending tasks that carry the river:workflow_wait metadata key.
+-- Used by the workflow scheduler's evaluateWaits pass (dialect-correct alternative
+-- to the raw `metadata ? 'key'` Postgres-only operator). Cursor pagination via
+-- @after_id allows callers to page through all pending wait tasks without
+-- re-fetching the same low-id rows each tick.
+-- name: JobGetWorkflowWaitTasks :many
+SELECT *
+FROM /* TEMPLATE: schema */river_job
+WHERE state = 'pending'::/* TEMPLATE: schema */river_job_state
+  AND metadata ? 'river:workflow_wait'
+  AND id > @after_id::bigint
+ORDER BY id
+LIMIT @max::int;
+
 -- name: JobCancelWorkflow :many
 WITH locked AS (
   SELECT id, queue, state
@@ -864,4 +878,26 @@ WHERE metadata->>'river:workflow_id' = @workflow_id::text
   -- Cast state to text to avoid needing the OID of the river_job_state[] enum
   -- array type registered (mirroring the pattern in JobSetStateIfRunningMany).
   AND state::text = ANY(@target_states::text[])
+RETURNING *;
+
+-- Promotes or cancels a single pending workflow wait task.
+-- promote: state → scheduled (if scheduled_at > now) else available; sets river:workflow_wait_resolved_at.
+-- cancel:  state → cancelled, finalized_at = now; sets river:workflow_wait_failed_reason.
+-- No-op (returns 0 rows) if the row is not in state 'pending'.
+-- name: JobApplyWorkflowWait :one
+UPDATE /* TEMPLATE: schema */river_job
+SET
+  state = CASE
+    WHEN @outcome::text = 'cancel' THEN 'cancelled'::/* TEMPLATE: schema */river_job_state
+    WHEN scheduled_at > @now::timestamptz THEN 'scheduled'::/* TEMPLATE: schema */river_job_state
+    ELSE 'available'::/* TEMPLATE: schema */river_job_state
+  END,
+  finalized_at = CASE WHEN @outcome::text = 'cancel' THEN @now::timestamptz ELSE finalized_at END,
+  metadata = CASE
+    WHEN @outcome::text = 'cancel'
+      THEN jsonb_set(metadata, '{river:workflow_wait_failed_reason}'::text[], to_jsonb('dependency failed'::text), true)
+    ELSE jsonb_set(metadata, '{river:workflow_wait_resolved_at}'::text[], to_jsonb(@now::timestamptz), true)
+  END
+WHERE id = @id::bigint
+  AND state = 'pending'::/* TEMPLATE: schema */river_job_state
 RETURNING *;

@@ -249,6 +249,246 @@ func exerciseJobGetWorkflowTasks[TTx any](ctx context.Context, t *testing.T, exe
 	})
 }
 
+func exerciseJobApplyWorkflowWait[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
+	t.Helper()
+
+	setup := func(ctx context.Context, t *testing.T) riverdriver.Executor {
+		t.Helper()
+		exec, _ := executorWithTx(ctx, t)
+		return exec
+	}
+
+	t.Run("JobApplyWorkflowWait", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("PromotePastScheduledAt_BecomesAvailable", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			waitJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID:  "wf-wait-promote-past",
+				TaskName:    "w1",
+				State:       rivertype.JobStatePending,
+				ScheduledAt: now.Add(-time.Hour), // scheduled in the past
+				Wait:        json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      waitJob.ID,
+				Outcome: "promote",
+				Now:     now,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.Equal(t, rivertype.JobStateAvailable, row.State)
+
+			var meta map[string]any
+			require.NoError(t, json.Unmarshal(row.Metadata, &meta))
+			require.Contains(t, meta, rivercommon.MetadataKeyWorkflowWaitResolvedAt, "resolved_at must be set on promote")
+		})
+
+		t.Run("PromoteFutureScheduledAt_BecomesScheduled", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			waitJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID:  "wf-wait-promote-future",
+				TaskName:    "w2",
+				State:       rivertype.JobStatePending,
+				ScheduledAt: now.Add(time.Hour), // scheduled in the future
+				Wait:        json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      waitJob.ID,
+				Outcome: "promote",
+				Now:     now,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.Equal(t, rivertype.JobStateScheduled, row.State)
+
+			var meta map[string]any
+			require.NoError(t, json.Unmarshal(row.Metadata, &meta))
+			require.Contains(t, meta, rivercommon.MetadataKeyWorkflowWaitResolvedAt, "resolved_at must be set on promote")
+		})
+
+		t.Run("UnknownOutcome_ReturnsError", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			waitJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: "wf-wait-unknown-outcome",
+				TaskName:   "w5",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      waitJob.ID,
+				Outcome: "bogus",
+				Now:     now,
+			})
+			require.Error(t, err, "unknown outcome must return an error")
+			require.Nil(t, row)
+
+			// Confirm the row is unchanged — still pending.
+			unchanged, err := exec.JobGetByID(ctx, &riverdriver.JobGetByIDParams{ID: waitJob.ID})
+			require.NoError(t, err)
+			require.Equal(t, rivertype.JobStatePending, unchanged.State)
+		})
+
+		t.Run("Cancel_BecomesCancelledWithFinalizedAt", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			waitJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: "wf-wait-cancel",
+				TaskName:   "w3",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      waitJob.ID,
+				Outcome: "cancel",
+				Now:     now,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.Equal(t, rivertype.JobStateCancelled, row.State)
+			require.NotNil(t, row.FinalizedAt)
+
+			var meta map[string]any
+			require.NoError(t, json.Unmarshal(row.Metadata, &meta))
+			require.Contains(t, meta, rivercommon.MetadataKeyWorkflowWaitFailedReason, "failed_reason must be set on cancel")
+		})
+
+		t.Run("NonPendingRow_ReturnsErrNotFound", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+			now := time.Now()
+
+			// Insert a job in available state (not pending) — outcome must not apply.
+			availableJob := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: "wf-wait-not-pending",
+				TaskName:   "w4",
+				State:      rivertype.JobStateAvailable,
+				Wait:       json.RawMessage(`{"type":"duration","duration":"1h"}`),
+			})
+
+			row, err := exec.JobApplyWorkflowWait(ctx, &riverdriver.JobApplyWorkflowWaitParams{
+				ID:      availableJob.ID,
+				Outcome: "promote",
+				Now:     now,
+			})
+			require.ErrorIs(t, err, rivertype.ErrNotFound, "non-pending row must return ErrNotFound")
+			require.Nil(t, row)
+		})
+	})
+}
+
+func exerciseJobGetWorkflowWaitTasks[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
+	t.Helper()
+
+	setup := func(ctx context.Context, t *testing.T) riverdriver.Executor {
+		t.Helper()
+		exec, _ := executorWithTx(ctx, t)
+		return exec
+	}
+
+	t.Run("JobGetWorkflowWaitTasks", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("ReturnsPendingWaitTasks", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+
+			workflowID := "wf-wait-list"
+
+			// A pending task WITH the river:workflow_wait key — must be returned.
+			waitTask := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "wait",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"terms":[],"expr":"true"}`),
+			})
+
+			// A pending task WITHOUT the river:workflow_wait key — must NOT be returned.
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "no-wait",
+				State:      rivertype.JobStatePending,
+			})
+
+			// A non-pending task WITH the river:workflow_wait key — must NOT be returned.
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "wait-available",
+				State:      rivertype.JobStateAvailable,
+				Wait:       json.RawMessage(`{"terms":[],"expr":"true"}`),
+			})
+
+			rows, err := exec.JobGetWorkflowWaitTasks(ctx, &riverdriver.JobGetWorkflowWaitTasksParams{
+				Max: 100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 1, "only the pending wait-bearing task must be returned")
+			require.Equal(t, waitTask.ID, rows[0].ID)
+			require.Equal(t, rivertype.JobStatePending, rows[0].State)
+		})
+
+		t.Run("AfterIDFiltering", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+
+			workflowID := "wf-wait-after-id"
+
+			// Insert two pending wait tasks. IDs are auto-assigned in ascending order.
+			firstWaitTask := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "wait-first",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"terms":[],"expr":"true"}`),
+			})
+			secondWaitTask := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "wait-second",
+				State:      rivertype.JobStatePending,
+				Wait:       json.RawMessage(`{"terms":[],"expr":"true"}`),
+			})
+
+			// With AfterID = first task's id, only the second task should be returned.
+			rows, err := exec.JobGetWorkflowWaitTasks(ctx, &riverdriver.JobGetWorkflowWaitTasksParams{
+				AfterID: firstWaitTask.ID,
+				Max:     100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 1, "only the task with id > AfterID must be returned")
+			require.Equal(t, secondWaitTask.ID, rows[0].ID)
+
+			// With AfterID = 0 (default), both tasks should be returned.
+			rows, err = exec.JobGetWorkflowWaitTasks(ctx, &riverdriver.JobGetWorkflowWaitTasksParams{
+				AfterID: 0,
+				Max:     100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 2, "both pending wait tasks must be returned when AfterID=0")
+		})
+	})
+}
+
 func exerciseJobUpdateWorkflowReady[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
 	t.Helper()
 

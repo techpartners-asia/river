@@ -134,4 +134,3 @@ func requireDeadlineReason(t *testing.T, row *rivertype.JobRow) {
 	require.Equal(t, "workflow deadline exceeded", meta["river:workflow_cancel_reason"],
 		"task should carry the deadline-cancel reason")
 }
-

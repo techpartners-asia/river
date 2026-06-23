@@ -616,6 +616,21 @@ FROM /* TEMPLATE: schema */river_job
 WHERE json_extract(metadata, '$."river:workflow_id"') = cast(@workflow_id AS text)
 ORDER BY id;
 
+-- Returns pending tasks that carry the river:workflow_wait metadata key.
+-- Uses json_extract (dialect-correct for SQLite) instead of the Postgres-only
+-- `metadata ? 'key'` jsonb operator. Mirrors the skip-clause in
+-- JobClassifyWorkflowReady: json_extract IS NOT NULL <=> key present.
+-- Cursor pagination via @after_id allows callers to page through all pending
+-- wait tasks without re-fetching the same low-id rows each tick.
+-- name: JobGetWorkflowWaitTasks :many
+SELECT *
+FROM /* TEMPLATE: schema */river_job
+WHERE state = 'pending'
+  AND json_extract(metadata, '$."river:workflow_wait"') IS NOT NULL
+  AND id > @after_id
+ORDER BY id
+LIMIT @max;
+
 -- name: JobRetryWorkflow :many
 UPDATE /* TEMPLATE: schema */river_job
 SET state = CASE
@@ -631,4 +646,25 @@ SET state = CASE
     metadata = json_remove(metadata, '$.cancel_attempted_at', '$."river:workflow_cancel_reason"')
 WHERE json_extract(metadata, '$."river:workflow_id"') = cast(@workflow_id AS text)
   AND state IN (sqlc.slice('target_states'))
+RETURNING *;
+
+-- Cancels a single pending workflow wait task and sets river:workflow_wait_failed_reason.
+-- No-op (returns 0 rows) if the row is not in state 'pending'.
+-- name: JobApplyWorkflowWaitCancel :one
+UPDATE /* TEMPLATE: schema */river_job
+SET state        = 'cancelled',
+    finalized_at = cast(@now AS text),
+    metadata     = json_set(metadata, '$."river:workflow_wait_failed_reason"', 'dependency failed')
+WHERE id = @id
+  AND state = 'pending'
+RETURNING *;
+
+-- Promotes a single pending workflow wait task to the target state and sets river:workflow_wait_resolved_at.
+-- No-op (returns 0 rows) if the row is not in state 'pending'.
+-- name: JobApplyWorkflowWaitPromote :one
+UPDATE /* TEMPLATE: schema */river_job
+SET state        = @new_state,
+    metadata     = json_set(metadata, '$."river:workflow_wait_resolved_at"', cast(@now AS text))
+WHERE id = @id
+  AND state = 'pending'
 RETURNING *;

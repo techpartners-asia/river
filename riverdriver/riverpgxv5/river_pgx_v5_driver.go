@@ -224,7 +224,7 @@ func (e *Executor) JobCancelWorkflow(ctx context.Context, params *riverdriver.Jo
 		CancelAttemptedAt: cancelledAt,
 		ControlTopic:      params.ControlTopic,
 		Now:               params.Now,
-		Reason:             params.Reason,
+		Reason:            params.Reason,
 		Schema:            pgtype.Text{String: params.Schema, Valid: params.Schema != ""},
 		WorkflowID:        params.WorkflowID,
 	})
@@ -315,6 +315,21 @@ func (e *Executor) JobDeleteMany(ctx context.Context, params *riverdriver.JobDel
 	return sliceutil.MapError(jobs, jobRowFromInternal)
 }
 
+func (e *Executor) JobApplyWorkflowWait(ctx context.Context, params *riverdriver.JobApplyWorkflowWaitParams) (*rivertype.JobRow, error) {
+	if params.Outcome != "promote" && params.Outcome != "cancel" {
+		return nil, fmt.Errorf("riverdriver: JobApplyWorkflowWait: unknown outcome %q (must be \"promote\" or \"cancel\")", params.Outcome)
+	}
+	job, err := dbsqlc.New().JobApplyWorkflowWait(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobApplyWorkflowWaitParams{
+		ID:      params.ID,
+		Outcome: params.Outcome,
+		Now:     params.Now,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return jobRowFromInternal(job)
+}
+
 func (e *Executor) JobGetAvailable(ctx context.Context, params *riverdriver.JobGetAvailableParams) ([]*rivertype.JobRow, error) {
 	jobs, err := dbsqlc.New().JobGetAvailable(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetAvailableParams{
 		AttemptedBy:    params.ClientID,
@@ -372,6 +387,17 @@ func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.
 	jobs, err := dbsqlc.New().JobGetWorkflowTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowTasksParams{
 		WorkflowID: params.WorkflowID,
 		TaskNames:  taskNames,
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
+func (e *Executor) JobGetWorkflowWaitTasks(ctx context.Context, params *riverdriver.JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobGetWorkflowWaitTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowWaitTasksParams{
+		AfterID: params.AfterID,
+		Max:     int32(min(params.Max, math.MaxInt32)), //nolint:gosec
 	})
 	if err != nil {
 		return nil, interpretError(err)
