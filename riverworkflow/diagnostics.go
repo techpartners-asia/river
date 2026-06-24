@@ -104,15 +104,22 @@ const (
 // writer is active, diagnostics may diverge from the scheduler unless
 // IncludeAfterResolution is set to true.
 func (w *Workflow[TTx]) WaitDiagnostics(ctx context.Context, taskName string, opts *WorkflowWaitDiagnosticsOpts) (*WaitDiagnostics, error) {
-	return w.waitDiagnosticsOnExec(ctx, w.exec, taskName, opts)
+	return waitDiagnosticsOnExec(ctx, w.exec, w.schema, w.id, taskName, opts)
 }
 
 // WaitDiagnosticsTx is the transactional variant of [Workflow.WaitDiagnostics].
 func (w *Workflow[TTx]) WaitDiagnosticsTx(ctx context.Context, tx TTx, taskName string, opts *WorkflowWaitDiagnosticsOpts) (*WaitDiagnostics, error) {
-	return w.waitDiagnosticsOnExec(ctx, w.driver.UnwrapExecutor(tx), taskName, opts)
+	return waitDiagnosticsOnExec(ctx, w.driver.UnwrapExecutor(tx), w.schema, w.id, taskName, opts)
 }
 
-func (w *Workflow[TTx]) waitDiagnosticsOnExec(ctx context.Context, exec riverdriver.Executor, taskName string, opts *WorkflowWaitDiagnosticsOpts) (*WaitDiagnostics, error) {
+// WaitDiagnosticsForExec computes a read-only wait snapshot for a single task
+// using a driver executor directly, without constructing a Workflow handle or
+// starting any scheduler. Intended for read-only consumers such as dashboards.
+func WaitDiagnosticsForExec(ctx context.Context, exec riverdriver.Executor, schema, workflowID, taskName string, opts *WorkflowWaitDiagnosticsOpts) (*WaitDiagnostics, error) {
+	return waitDiagnosticsOnExec(ctx, exec, schema, workflowID, taskName, opts)
+}
+
+func waitDiagnosticsOnExec(ctx context.Context, exec riverdriver.Executor, schema, workflowID, taskName string, opts *WorkflowWaitDiagnosticsOpts) (*WaitDiagnostics, error) {
 	if exec == nil {
 		return nil, fmt.Errorf("riverworkflow: workflow has no driver bound")
 	}
@@ -128,8 +135,8 @@ func (w *Workflow[TTx]) waitDiagnosticsOnExec(ctx context.Context, exec riverdri
 
 	// Load all workflow tasks (reuses the same path as LoadAll/WorkflowTasks).
 	rows, err := exec.JobGetWorkflowTasks(ctx, &riverdriver.JobGetWorkflowTasksParams{
-		Schema:     w.schema,
-		WorkflowID: w.id,
+		Schema:     schema,
+		WorkflowID: workflowID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("riverworkflow: WaitDiagnostics: load tasks: %w", err)
@@ -156,7 +163,7 @@ func (w *Workflow[TTx]) waitDiagnosticsOnExec(ctx context.Context, exec riverdri
 	// Find the target task.
 	targetRow, ok := siblings[taskName]
 	if !ok {
-		return nil, fmt.Errorf("riverworkflow: WaitDiagnostics: task %q not found in workflow %s", taskName, w.id)
+		return nil, fmt.Errorf("riverworkflow: WaitDiagnostics: task %q not found in workflow %s", taskName, workflowID)
 	}
 
 	// Parse the target task's metadata.
@@ -195,7 +202,7 @@ func (w *Workflow[TTx]) waitDiagnosticsOnExec(ctx context.Context, exec riverdri
 
 	// 1. Timer anchors.
 	//    WorkflowCreatedAt: decode from ULID timestamp; fall back to task CreatedAt.
-	workflowCreatedAt, err := workflowid.Timestamp(w.id)
+	workflowCreatedAt, err := workflowid.Timestamp(workflowID)
 	if err != nil {
 		workflowCreatedAt = targetRow.CreatedAt
 	}
@@ -271,11 +278,11 @@ func (w *Workflow[TTx]) waitDiagnosticsOnExec(ctx context.Context, exec riverdri
 
 	if hasSignalTerm {
 		rawSignals, err := exec.WorkflowSignalList(ctx, &riverdriver.WorkflowSignalListParams{
-			WorkflowID:      w.id,
+			WorkflowID:      workflowID,
 			IncludeResolved: includeResolved,
 			Max:             scanLimit,
 			OrderByNewest:   true, // DESC so newest signals are not truncated
-			Schema:          w.schema,
+			Schema:          schema,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("riverworkflow: WaitDiagnostics: load signals: %w", err)
