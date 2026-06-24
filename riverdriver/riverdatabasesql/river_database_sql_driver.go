@@ -394,8 +394,9 @@ func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.
 
 func (e *Executor) JobGetWorkflowDeadlineExpired(ctx context.Context, params *riverdriver.JobGetWorkflowDeadlineExpiredParams) ([]*rivertype.JobRow, error) {
 	jobs, err := dbsqlc.New().JobGetWorkflowDeadlineExpired(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowDeadlineExpiredParams{
-		Now: params.Now,
-		Max: int32(min(params.Max, math.MaxInt32)), //nolint:gosec
+		AfterID: params.AfterID,
+		Now:     params.Now,
+		Max:     int32(min(params.Max, math.MaxInt32)), //nolint:gosec
 	})
 	if err != nil {
 		return nil, interpretError(err)

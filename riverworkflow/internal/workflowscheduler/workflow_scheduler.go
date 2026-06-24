@@ -203,58 +203,92 @@ func (s *WorkflowScheduler) promoteReady(ctx context.Context) error {
 func (s *WorkflowScheduler) cancelExpiredWorkflows(ctx context.Context) error {
 	now := s.Time.Now().UTC()
 
-	iterCtx, cancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
-	rows, err := s.exec.JobGetWorkflowDeadlineExpired(iterCtx, &riverdriver.JobGetWorkflowDeadlineExpiredParams{
-		Max:    s.config.BatchSize,
-		Now:    now,
-		Schema: s.config.Schema,
-	})
-	cancel()
-	if err != nil {
-		return fmt.Errorf("listing expired workflow tasks: %w", err)
-	}
-	if len(rows) > 0 {
-		s.Logger.DebugContext(ctx, s.Name+": Expired workflow task scan",
-			slog.Int("rows_found", len(rows)))
-	}
-
 	// Dedup workflow_ids: any row in the expired set is enough to know its
 	// whole workflow needs cancellation, and JobCancelWorkflow takes one
-	// workflow_id at a time.
+	// workflow_id at a time. Declared outside the page loop so the dedup holds
+	// across pages within a single tick.
 	seen := map[string]bool{}
-	for _, row := range rows {
-		var meta map[string]json.RawMessage
-		if err := json.Unmarshal(row.Metadata, &meta); err != nil {
-			continue
-		}
-		var wfID string
-		if raw, ok := meta[rivercommon.MetadataKeyWorkflowID]; ok {
-			_ = json.Unmarshal(raw, &wfID)
-		}
-		if wfID == "" || seen[wfID] {
-			continue
-		}
-		seen[wfID] = true
 
-		iterCancelCtx, cancelCancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
-		cancelled, err := s.exec.JobCancelWorkflow(iterCancelCtx, &riverdriver.JobCancelWorkflowParams{
-			CancelAttemptedAt: s.Time.Now(),
-			ControlTopic:      string(notifier.NotificationTopicControl),
-			Now:               s.Time.Now(),
-			Reason:            "workflow deadline exceeded",
-			Schema:            s.config.Schema,
-			WorkflowID:        wfID,
-		})
-		cancelCancel()
-		if err != nil {
-			s.Logger.WarnContext(ctx, s.Name+": Failed to cancel expired workflow",
-				slog.String("workflow_id", wfID),
-				slog.String("error", err.Error()))
-			continue
+	// Cursor pagination (id > afterID) drains all expired tasks across pages.
+	// Without a cursor, persistent non-terminal low-id rows (stuck-running
+	// tasks, corrupt-metadata tasks) would fill the LIMIT window every tick and
+	// starve higher-id expired workflows from ever being cancelled. afterID
+	// strictly increases each page (ORDER BY id), so we always page past the
+	// stuck low-id rows. Mirrors evaluateWaits's drain loop.
+	var afterID int64
+	for {
+		// Check outer context before each page fetch so total time is bounded
+		// even when individual per-iteration timeouts are long.
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		s.Logger.InfoContext(ctx, s.Name+": Cancelled expired workflow",
-			slog.String("workflow_id", wfID),
-			slog.Int("tasks_cancelled", len(cancelled)))
+
+		iterCtx, cancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
+		rows, err := s.exec.JobGetWorkflowDeadlineExpired(iterCtx, &riverdriver.JobGetWorkflowDeadlineExpiredParams{
+			AfterID: afterID,
+			Max:     s.config.BatchSize,
+			Now:     now,
+			Schema:  s.config.Schema,
+		})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("listing expired workflow tasks: %w", err)
+		}
+
+		if len(rows) == 0 {
+			break
+		}
+
+		s.Logger.DebugContext(ctx, s.Name+": Expired workflow task scan",
+			slog.Int("rows_found", len(rows)),
+			slog.Int64("after_id", afterID))
+
+		for _, row := range rows {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
+			var meta map[string]json.RawMessage
+			if err := json.Unmarshal(row.Metadata, &meta); err != nil {
+				continue
+			}
+			var wfID string
+			if raw, ok := meta[rivercommon.MetadataKeyWorkflowID]; ok {
+				_ = json.Unmarshal(raw, &wfID)
+			}
+			if wfID == "" || seen[wfID] {
+				continue
+			}
+			seen[wfID] = true
+
+			iterCancelCtx, cancelCancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
+			cancelled, err := s.exec.JobCancelWorkflow(iterCancelCtx, &riverdriver.JobCancelWorkflowParams{
+				CancelAttemptedAt: s.Time.Now(),
+				ControlTopic:      string(notifier.NotificationTopicControl),
+				Now:               s.Time.Now(),
+				Reason:            "workflow deadline exceeded",
+				Schema:            s.config.Schema,
+				WorkflowID:        wfID,
+			})
+			cancelCancel()
+			if err != nil {
+				s.Logger.WarnContext(ctx, s.Name+": Failed to cancel expired workflow",
+					slog.String("workflow_id", wfID),
+					slog.String("error", err.Error()))
+				continue
+			}
+			s.Logger.InfoContext(ctx, s.Name+": Cancelled expired workflow",
+				slog.String("workflow_id", wfID),
+				slog.Int("tasks_cancelled", len(cancelled)))
+		}
+
+		// Advance cursor to the last id in this page (rows are ORDER BY id).
+		afterID = rows[len(rows)-1].ID
+
+		// If we got fewer rows than the batch size, this is the last page.
+		if len(rows) < s.config.BatchSize {
+			break
+		}
 	}
 	return nil
 }

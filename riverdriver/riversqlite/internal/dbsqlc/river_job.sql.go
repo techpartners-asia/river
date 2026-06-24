@@ -920,21 +920,25 @@ FROM /* TEMPLATE: schema */river_job
 WHERE state IN ('available','pending','retryable','running','scheduled')
   AND json_extract(metadata, '$."river:workflow_deadline_at"') IS NOT NULL
   AND julianday(json_extract(metadata, '$."river:workflow_deadline_at"')) < julianday(?1)
+  AND id > ?2
 ORDER BY id
-LIMIT ?2
+LIMIT ?3
 `
 
 type JobGetWorkflowDeadlineExpiredParams struct {
-	Now interface{}
-	Max int64
+	Now     interface{}
+	AfterID int64
+	Max     int64
 }
 
 // Lists non-terminal workflow tasks whose recorded deadline has passed. Each
 // driver uses its own JSON/timestamp dialect (Postgres: ::timestamptz cast;
 // SQLite: julianday()). Used by the workflow scheduler's cancelExpiredWorkflows
-// pass.
+// pass. Cursor pagination via @after_id allows callers to page through all
+// expired tasks without re-fetching the same low-id rows each tick (which would
+// let persistent non-terminal low-id rows starve higher-id expired workflows).
 func (q *Queries) JobGetWorkflowDeadlineExpired(ctx context.Context, db DBTX, arg *JobGetWorkflowDeadlineExpiredParams) ([]*RiverJob, error) {
-	rows, err := db.QueryContext(ctx, jobGetWorkflowDeadlineExpired, arg.Now, arg.Max)
+	rows, err := db.QueryContext(ctx, jobGetWorkflowDeadlineExpired, arg.Now, arg.AfterID, arg.Max)
 	if err != nil {
 		return nil, err
 	}

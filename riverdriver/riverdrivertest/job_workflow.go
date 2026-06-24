@@ -515,6 +515,49 @@ func exerciseJobGetWorkflowDeadlineExpired[TTx any](ctx context.Context, t *test
 			require.Len(t, rows, 1, "whole-second deadline < sub-second now must be returned (boundary precision test)")
 			require.Equal(t, task.ID, rows[0].ID)
 		})
+
+		t.Run("AfterIDFiltering", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+
+			now := time.Now().UTC()
+			workflowID := "wf-deadline-after-id"
+
+			// Insert two non-terminal tasks with past deadlines. IDs are
+			// auto-assigned in ascending order.
+			firstTask := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "expired-first",
+				State:      rivertype.JobStateAvailable,
+				DeadlineAt: now.Add(-time.Hour),
+			})
+			secondTask := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "expired-second",
+				State:      rivertype.JobStateAvailable,
+				DeadlineAt: now.Add(-time.Hour),
+			})
+
+			// With AfterID = first task's id, only the second task should be returned.
+			rows, err := exec.JobGetWorkflowDeadlineExpired(ctx, &riverdriver.JobGetWorkflowDeadlineExpiredParams{
+				AfterID: firstTask.ID,
+				Now:     now,
+				Max:     100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 1, "only the task with id > AfterID must be returned")
+			require.Equal(t, secondTask.ID, rows[0].ID)
+
+			// With AfterID = 0 (default), both tasks should be returned.
+			rows, err = exec.JobGetWorkflowDeadlineExpired(ctx, &riverdriver.JobGetWorkflowDeadlineExpiredParams{
+				AfterID: 0,
+				Now:     now,
+				Max:     100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 2, "both expired tasks must be returned when AfterID=0")
+		})
 	})
 }
 

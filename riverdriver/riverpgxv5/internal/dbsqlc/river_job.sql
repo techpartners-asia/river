@@ -741,13 +741,16 @@ ORDER BY id;
 -- Lists non-terminal workflow tasks whose recorded deadline has passed. Each
 -- driver uses its own JSON/timestamp dialect (Postgres: ::timestamptz cast;
 -- SQLite: julianday()). Used by the workflow scheduler's cancelExpiredWorkflows
--- pass.
+-- pass. Cursor pagination via @after_id allows callers to page through all
+-- expired tasks without re-fetching the same low-id rows each tick (which would
+-- let persistent non-terminal low-id rows starve higher-id expired workflows).
 -- name: JobGetWorkflowDeadlineExpired :many
 SELECT *
 FROM /* TEMPLATE: schema */river_job
 WHERE state IN ('available','pending','retryable','running','scheduled')
   AND metadata ? 'river:workflow_deadline_at'
   AND (metadata->>'river:workflow_deadline_at')::timestamptz < @now::timestamptz
+  AND id > @after_id::bigint
 ORDER BY id
 LIMIT @max::int;
 

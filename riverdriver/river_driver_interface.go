@@ -500,9 +500,10 @@ type JobGetWorkflowTasksParams struct {
 // workflow tasks whose deadline has passed. The query is dialect-correct for
 // all drivers (no Postgres-only ? or ->> operators).
 type JobGetWorkflowDeadlineExpiredParams struct {
-	Max    int
-	Now    time.Time
-	Schema string
+	AfterID int64
+	Max     int
+	Now     time.Time
+	Schema  string
 }
 
 // JobGetWorkflowWaitTasksParams are parameters for listing pending workflow
