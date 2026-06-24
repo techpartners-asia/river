@@ -616,6 +616,21 @@ FROM /* TEMPLATE: schema */river_job
 WHERE json_extract(metadata, '$."river:workflow_id"') = cast(@workflow_id AS text)
 ORDER BY id;
 
+-- Returns non-terminal workflow tasks whose river:workflow_deadline_at metadata
+-- is in the past (i.e., < @now). Used by the workflow scheduler's
+-- cancelExpiredWorkflows pass. Uses julianday() for sub-second precision
+-- comparison of RFC3339Nano strings stored in JSON metadata, which is safe
+-- regardless of fractional-second width (avoids lexical comparison pitfalls).
+-- Pass @now as an RFC3339Nano UTC string (same format as stored deadlines).
+-- name: JobGetWorkflowDeadlineExpired :many
+SELECT *
+FROM /* TEMPLATE: schema */river_job
+WHERE state IN ('available','pending','retryable','running','scheduled')
+  AND json_extract(metadata, '$."river:workflow_deadline_at"') IS NOT NULL
+  AND julianday(json_extract(metadata, '$."river:workflow_deadline_at"')) < julianday(@now)
+ORDER BY id
+LIMIT @max;
+
 -- Returns pending tasks that carry the river:workflow_wait metadata key.
 -- Uses json_extract (dialect-correct for SQLite) instead of the Postgres-only
 -- `metadata ? 'key'` jsonb operator. Mirrors the skip-clause in

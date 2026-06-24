@@ -44,6 +44,7 @@ func Exercise[TTx any](ctx context.Context, t *testing.T,
 	exerciseJobCancelWorkflow(ctx, t, executorWithTx)
 	exerciseJobRetryWorkflow(ctx, t, executorWithTx)
 	exerciseJobGetWorkflowTasks(ctx, t, executorWithTx)
+	exerciseJobGetWorkflowDeadlineExpired(ctx, t, executorWithTx)
 	exerciseJobGetWorkflowWaitTasks(ctx, t, executorWithTx)
 	exerciseJobUpdateWorkflowReady(ctx, t, executorWithTx)
 	exerciseJobApplyWorkflowWait(ctx, t, executorWithTx)

@@ -203,21 +203,11 @@ func (s *WorkflowScheduler) promoteReady(ctx context.Context) error {
 func (s *WorkflowScheduler) cancelExpiredWorkflows(ctx context.Context) error {
 	now := s.Time.Now().UTC()
 
-	// Inline now into the WHERE clause via a quoted timestamp literal rather
-	// than NamedArgs so this query stays portable across the drivers' JobList
-	// implementations (each handles parameter substitution slightly
-	// differently and not all support NamedArgs uniformly).
-	nowLiteral := fmt.Sprintf("'%s'::timestamptz", now.Format(time.RFC3339Nano))
-	whereClause := `state IN ('available','pending','retryable','running','scheduled')
-		AND metadata ? 'river:workflow_deadline_at'
-		AND (metadata->>'river:workflow_deadline_at')::timestamptz < ` + nowLiteral
-
 	iterCtx, cancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
-	rows, err := s.exec.JobList(iterCtx, &riverdriver.JobListParams{
-		Max:           int32(s.config.BatchSize),
-		OrderByClause: "id",
-		Schema:        s.config.Schema,
-		WhereClause:   whereClause,
+	rows, err := s.exec.JobGetWorkflowDeadlineExpired(iterCtx, &riverdriver.JobGetWorkflowDeadlineExpiredParams{
+		Max:    s.config.BatchSize,
+		Now:    now,
+		Schema: s.config.Schema,
 	})
 	cancel()
 	if err != nil {

@@ -215,6 +215,7 @@ type Executor interface {
 	JobGetByKindMany(ctx context.Context, params *JobGetByKindManyParams) ([]*rivertype.JobRow, error)
 	JobGetStuck(ctx context.Context, params *JobGetStuckParams) ([]*rivertype.JobRow, error)
 	JobGetWorkflowTasks(ctx context.Context, params *JobGetWorkflowTasksParams) ([]*rivertype.JobRow, error)
+	JobGetWorkflowDeadlineExpired(ctx context.Context, params *JobGetWorkflowDeadlineExpiredParams) ([]*rivertype.JobRow, error)
 	JobGetWorkflowWaitTasks(ctx context.Context, params *JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error)
 	JobInsertFastMany(ctx context.Context, params *JobInsertFastManyParams) ([]*JobInsertFastResult, error)
 	JobInsertFastManyNoReturning(ctx context.Context, params *JobInsertFastManyParams) (int, error)
@@ -493,6 +494,15 @@ type JobGetWorkflowTasksParams struct {
 	Schema     string
 	WorkflowID string
 	TaskNames  []string // optional filter; empty means "all tasks"
+}
+
+// JobGetWorkflowDeadlineExpiredParams are parameters for listing non-terminal
+// workflow tasks whose deadline has passed. The query is dialect-correct for
+// all drivers (no Postgres-only ? or ->> operators).
+type JobGetWorkflowDeadlineExpiredParams struct {
+	Max    int
+	Now    time.Time
+	Schema string
 }
 
 // JobGetWorkflowWaitTasksParams are parameters for listing pending workflow
