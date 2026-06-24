@@ -66,20 +66,29 @@ func TestTimestamp(t *testing.T) {
 		require.Equal(t, knownTime, ts)
 	})
 
-	t.Run("TooShortID", func(t *testing.T) {
+	t.Run("WrongLengthID", func(t *testing.T) {
 		t.Parallel()
 
 		_, err := Timestamp("ABCD")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "too short")
+		require.Contains(t, err.Error(), "26-char ULID")
+	})
+
+	t.Run("CustomNonULIDDoesNotDecodeToBogusAnchor", func(t *testing.T) {
+		t.Parallel()
+
+		// A caller-supplied non-ULID id whose characters happen to be valid
+		// Crockford but whose length is not 26 must error, so the caller falls
+		// back to a real time source instead of a 1970-era anchor.
+		_, err := Timestamp("0000000000ABCDEF")
+		require.Error(t, err)
 	})
 
 	t.Run("InvalidCharacter", func(t *testing.T) {
 		t.Parallel()
 
-		// Build an id with an invalid character in the first 10 positions.
 		// Lowercase letters are not in the Crockford base32 alphabet.
-		_, err := Timestamp("000000000u0000000000000000")
+		_, err := Timestamp("000000000U0000000000000z00")
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid character")
 	})

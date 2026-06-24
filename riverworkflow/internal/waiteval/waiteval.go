@@ -106,6 +106,15 @@ func buildSignalEnv() (*cel.Env, error) {
 	)
 }
 
+// maxEvalCost bounds the runtime cost of a single CEL evaluation. Signal
+// payloads are sender-supplied, so a comprehension over a payload
+// (e.g. payload.items.all(...)) iterates attacker-influenced data; without a
+// ceiling one pathological evaluation could stall the single-goroutine
+// scheduler for every waiting task. When the limit is exceeded cel-go returns
+// a runtime error, which evalBool maps to false (hold), so the task is simply
+// re-evaluated rather than promoted.
+const maxEvalCost = 1_000_000
+
 // compileExpr compiles a CEL expression in the given environment and returns a
 // ready-to-evaluate Program, the compiled AST (for output-type inspection), or an error.
 func compileExpr(env *cel.Env, expr string) (cel.Program, *cel.Ast, error) {
@@ -113,7 +122,7 @@ func compileExpr(env *cel.Env, expr string) (cel.Program, *cel.Ast, error) {
 	if iss != nil && iss.Err() != nil {
 		return nil, nil, iss.Err()
 	}
-	prg, err := env.Program(ast)
+	prg, err := env.Program(ast, cel.CostLimit(maxEvalCost))
 	if err != nil {
 		return nil, nil, fmt.Errorf("waiteval: program construction: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -179,6 +180,13 @@ func (s *WorkflowScheduler) processWaitTask(
 		})
 		cancel()
 		if err != nil {
+			if errors.Is(err, rivertype.ErrNotFound) {
+				// The wait row left 'pending' between drain and apply (a
+				// concurrent user cancel, or another leader acting first). The
+				// state-guarded UPDATE matched 0 rows — nothing to do, not an
+				// error.
+				return nil
+			}
 			return fmt.Errorf("cancel wait task %d: %w", row.ID, err)
 		}
 		s.Logger.DebugContext(ctx, s.Name+": evaluateWaits: cancelled wait task (dep failed)",
@@ -423,6 +431,12 @@ func (s *WorkflowScheduler) processWaitTask(
 	})
 	cancel()
 	if err != nil {
+		if errors.Is(err, rivertype.ErrNotFound) {
+			// Row left 'pending' between drain and apply — the state-guarded
+			// promote matched 0 rows. We did not promote, so skip mark-resolved
+			// below and treat as a no-op rather than logging an error.
+			return nil
+		}
 		return fmt.Errorf("promote wait task %d: %w", row.ID, err)
 	}
 	s.Logger.DebugContext(ctx, s.Name+": evaluateWaits: promoted wait task",
@@ -475,9 +489,15 @@ func (s *WorkflowScheduler) ensureWaitStartedAt(
 				return t, nil
 			}
 		}
+		// Present but unparseable. Log so the corruption is diagnosable rather
+		// than silently resetting the anchor below (which would restart any
+		// after_wait_started timer). We still overwrite to make progress.
+		s.Logger.WarnContext(ctx, s.Name+": evaluateWaits: corrupt wait_started_at metadata, resetting to now",
+			slog.Int64("job_id", row.ID),
+			slog.String("raw", string(raw)))
 	}
 
-	// Not yet recorded — write it now.
+	// Not yet recorded (or corrupt) — write it now.
 	update := map[string]string{
 		rivercommon.MetadataKeyWorkflowWaitStartedAt: now.UTC().Format(time.RFC3339Nano),
 	}

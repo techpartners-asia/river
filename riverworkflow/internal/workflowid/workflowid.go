@@ -89,19 +89,25 @@ func encode(raw [16]byte) string {
 // Timestamp decodes the 48-bit Unix millisecond timestamp embedded in the
 // leading 10 Crockford-base32 characters of a workflow ID (ULID format).
 // The first 10 characters encode the full 48-bit ms timestamp (50 bits, with
-// two leading zero padding bits that are always zero). Returns an error if the
-// id is too short or contains characters not in the Crockford alphabet.
+// two leading zero padding bits that are always zero).
+//
+// It requires a full, well-formed 26-character ULID (the shape New produces)
+// and rejects anything else with an error. This matters because callers fall
+// back to a different time source on error: a caller-supplied non-ULID id
+// (e.g. WorkflowOpts.ID = "my-custom-id") must NOT be silently decoded into a
+// bogus 1970-era anchor — it must error so the caller uses its fallback.
 func Timestamp(id string) (time.Time, error) {
-	if len(id) < 10 {
-		return time.Time{}, fmt.Errorf("workflowid: id too short (len=%d)", len(id))
+	if len(id) != 26 {
+		return time.Time{}, fmt.Errorf("workflowid: not a 26-char ULID (len=%d)", len(id))
+	}
+	for i := range len(id) {
+		if strings.IndexByte(crockfordAlphabet, id[i]) < 0 {
+			return time.Time{}, fmt.Errorf("workflowid: invalid character %q at position %d", id[i], i)
+		}
 	}
 	var ms uint64
 	for i := range 10 {
-		v := strings.IndexByte(crockfordAlphabet, id[i])
-		if v < 0 {
-			return time.Time{}, fmt.Errorf("workflowid: invalid character %q at position %d", id[i], i)
-		}
-		ms = (ms << 5) | uint64(v) //nolint:gosec
+		ms = (ms << 5) | uint64(strings.IndexByte(crockfordAlphabet, id[i])) //nolint:gosec
 	}
 	// The 10 base32 chars carry 50 bits; the top 2 bits are always zero padding.
 	// Mask to 48 bits for clarity.
