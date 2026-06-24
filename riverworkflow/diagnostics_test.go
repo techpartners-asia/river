@@ -30,17 +30,26 @@ func (w *diagTestWorker) Work(_ context.Context, _ *river.Job[diagTestArgs]) err
 	return nil
 }
 
+// diagTestContext holds all the pieces built by buildDiagnosticsWorkflow.
+type diagTestContext struct {
+	Workflow *riverworkflow.Workflow[pgx.Tx]
+	Client   *riverworkflow.Client[pgx.Tx]
+	Schema   string
+	Driver   *riverpgxv5.Driver
+}
+
 // buildDiagnosticsWorkflow creates a Client and a Workflow handle bound to a
-// fresh DB schema for diagnostics tests, and inserts tasks into the DB.
-// Returns the workflow handle, client, and the inserted workflow ID.
-func buildDiagnosticsWorkflow(ctx context.Context, t *testing.T) (*riverworkflow.Workflow[pgx.Tx], *riverworkflow.Client[pgx.Tx]) {
+// fresh DB schema for diagnostics tests.
+// Returns a diagTestContext with the workflow handle, client, schema, and driver.
+func buildDiagnosticsWorkflow(ctx context.Context, t *testing.T) diagTestContext {
 	t.Helper()
 
 	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
 	require.NoError(t, err)
 	t.Cleanup(func() { dbPool.Close() })
 
-	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+	driver := riverpgxv5.New(dbPool)
+	schema := riverdbtest.TestSchema(ctx, t, driver, nil)
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &diagTestWorker{})
@@ -54,7 +63,7 @@ func buildDiagnosticsWorkflow(ctx context.Context, t *testing.T) (*riverworkflow
 	require.NoError(t, err)
 
 	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{Name: "diagnostics-test"})
-	return wf, client
+	return diagTestContext{Workflow: wf, Client: client, Schema: schema, Driver: driver}
 }
 
 // TestWaitDiagnostics_SignalGated tests that WaitDiagnostics correctly reports
@@ -65,7 +74,8 @@ func TestWaitDiagnostics_SignalGated(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	wf, client := buildDiagnosticsWorkflow(ctx, t)
+	tc := buildDiagnosticsWorkflow(ctx, t)
+	wf, client := tc.Workflow, tc.Client
 
 	// Build a workflow with:
 	// - "prereq": a normal task with no wait (depends on nothing)
@@ -121,7 +131,8 @@ func TestWaitDiagnostics_NoWait(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	wf, client := buildDiagnosticsWorkflow(ctx, t)
+	tc := buildDiagnosticsWorkflow(ctx, t)
+	wf, client := tc.Workflow, tc.Client
 
 	wf.Add("simple", diagTestArgs{}, nil, nil)
 
@@ -144,7 +155,8 @@ func TestWaitDiagnostics_MissingTask(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	wf, client := buildDiagnosticsWorkflow(ctx, t)
+	tc := buildDiagnosticsWorkflow(ctx, t)
+	wf, client := tc.Workflow, tc.Client
 
 	wf.Add("exists", diagTestArgs{}, nil, nil)
 
@@ -156,4 +168,53 @@ func TestWaitDiagnostics_MissingTask(t *testing.T) {
 
 	_, err = wf.WaitDiagnostics(ctx, "does-not-exist", nil)
 	require.Error(t, err)
+}
+
+// TestWaitDiagnosticsForExec tests that WaitDiagnosticsForExec returns the same
+// pending state as Workflow.WaitDiagnostics without needing a Workflow handle.
+func TestWaitDiagnosticsForExec(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tc := buildDiagnosticsWorkflow(ctx, t)
+	wf, client := tc.Workflow, tc.Client
+
+	// Build a signal-gated workflow task.
+	wf.Add("gate", diagTestArgs{}, nil, &riverworkflow.WorkflowTaskOpts{
+		Wait: &riverworkflow.WaitSpec{
+			Terms: []riverworkflow.WaitTermSpec{
+				riverworkflow.WaitTermSignal("approved", "approved", "payload.ok").Label("Needs approval"),
+			},
+			Expr: "approved",
+		},
+	})
+
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	require.Len(t, prep.Jobs, 1)
+
+	_, err = client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+
+	// Use the executor directly — no Workflow handle passed to WaitDiagnosticsForExec.
+	exec := tc.Driver.GetExecutor()
+
+	diag, err := riverworkflow.WaitDiagnosticsForExec(ctx, exec, tc.Schema, wf.ID(), "gate", nil)
+	require.NoError(t, err)
+	require.NotNil(t, diag)
+
+	// Before any signal is emitted, the task should be pending with expr=false.
+	require.Equal(t, riverworkflow.WaitPhasePending, diag.Phase)
+	require.False(t, diag.ExprResult)
+	require.Len(t, diag.Terms, 1)
+	require.Equal(t, "approved", diag.Terms[0].Name)
+	require.False(t, diag.Terms[0].Result)
+
+	// Verify it matches what Workflow.WaitDiagnostics returns for the same state.
+	wfDiag, err := wf.WaitDiagnostics(ctx, "gate", nil)
+	require.NoError(t, err)
+	require.Equal(t, wfDiag.Phase, diag.Phase)
+	require.Equal(t, wfDiag.ExprResult, diag.ExprResult)
 }
