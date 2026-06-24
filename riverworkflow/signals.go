@@ -143,9 +143,12 @@ type WorkflowSignalListForTaskParams struct {
 	// IncludeAfterResolution, when true, includes signals whose resolved_at is
 	// set. When false (the default), only unresolved signals are returned.
 	//
-	// Note: resolved_at is reserved for future resolution-marking. No signals
-	// are currently marked resolved by this library, so this field has no
-	// effect until a resolution writer is wired (CP4+).
+	// Signals are marked resolved by the workflow scheduler when a signal-gated
+	// wait task is promoted: all signal keys referenced by the task's WaitSpec
+	// are stamped with resolved_at at that point.
+	//
+	// PARITY: the exact resolution scope (which signals are marked) is inferred;
+	// River Pro's behaviour is closed-source and may differ.
 	IncludeAfterResolution bool
 
 	// Max is the maximum number of signals to return. Defaults to
@@ -185,9 +188,12 @@ type WorkflowSignalLatestForTaskOpts struct {
 	// IncludeAfterResolution, when true, includes signals whose resolved_at is
 	// set. When false (the default), only unresolved signals are considered.
 	//
-	// Note: resolved_at is reserved for future resolution-marking. No signals
-	// are currently marked resolved by this library, so this field has no
-	// effect until a resolution writer is wired (CP4+).
+	// Signals are marked resolved by the workflow scheduler when a signal-gated
+	// wait task is promoted: all signal keys referenced by the task's WaitSpec
+	// are stamped with resolved_at at that point.
+	//
+	// PARITY: the exact resolution scope (which signals are marked) is inferred;
+	// River Pro's behaviour is closed-source and may differ.
 	IncludeAfterResolution bool
 }
 

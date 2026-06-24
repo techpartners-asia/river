@@ -251,11 +251,19 @@ func (s *WorkflowScheduler) processWaitTask(
 	// dep-only) waits have no use for the signal rows and the round-trip is
 	// wasted. New() already applies cmp.Or(config.SignalScanLimit,
 	// SignalScanLimitDefault), so no local guard is needed here.
+	//
+	// While scanning, also collect the deduped set of signal keys so they can
+	// be marked resolved after a successful promote (see below).
 	hasSignalTerm := false
+	seenKeys := make(map[string]struct{})
+	var signalKeys []string
 	for _, term := range spec.Terms {
 		if term.Kind == "signal" {
 			hasSignalTerm = true
-			break
+			if _, seen := seenKeys[term.Key]; !seen && term.Key != "" {
+				seenKeys[term.Key] = struct{}{}
+				signalKeys = append(signalKeys, term.Key)
+			}
 		}
 	}
 
@@ -410,6 +418,36 @@ func (s *WorkflowScheduler) processWaitTask(
 	}
 	s.Logger.DebugContext(ctx, s.Name+": evaluateWaits: promoted wait task",
 		slog.Int64("job_id", row.ID))
+
+	// PARITY: marks all currently-unresolved signals for the task's signal keys
+	// as resolved on promotion; River Pro's exact resolution scope is
+	// closed-source and may differ.
+	//
+	// Starvation safety: the scheduler loads signals with IncludeResolved:true
+	// so a co-waiting task B that references the same signal key as task A will
+	// still see the (now-resolved) signal on the next tick. resolved_at only
+	// feeds the public IncludeAfterResolution filter and is invisible to the
+	// evaluator; marking resolved cannot starve B.
+	if hasSignalTerm && len(signalKeys) > 0 {
+		markCtx, markCancel := context.WithTimeout(ctx, riversharedmaintenance.TimeoutDefault)
+		markErr := s.exec.WorkflowSignalMarkResolved(markCtx, &riverdriver.WorkflowSignalMarkResolvedParams{
+			WorkflowID: workflowID,
+			SignalKeys: signalKeys,
+			Now:        now,
+			Schema:     s.config.Schema,
+		})
+		markCancel()
+		if markErr != nil {
+			// Non-fatal: task is already promoted; failing to mark resolved only
+			// affects the IncludeAfterResolution audit filter, not correctness.
+			s.Logger.WarnContext(ctx, s.Name+": evaluateWaits: failed to mark signals resolved (non-fatal)",
+				slog.Int64("job_id", row.ID),
+				slog.String("workflow_id", workflowID),
+				slog.Any("signal_keys", signalKeys),
+				slog.String("error", markErr.Error()))
+		}
+	}
+
 	return nil
 }
 

@@ -737,3 +737,107 @@ func TestSimulation_SignalGated(t *testing.T) {
 		require.Equal(t, rivertype.JobStateCompleted, row.State, "task %s should be completed", name)
 	}
 }
+
+// TestSimulation_SignalGated_MarksResolved verifies that the resolved_at writer
+// fires when a signal-gated task is promoted by the scheduler: after task "b"
+// completes, ListForTask with IncludeAfterResolution:false must exclude the
+// signal (resolved), and with IncludeAfterResolution:true it must include it
+// with a non-nil ResolvedAt.
+func TestSimulation_SignalGated_MarksResolved(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dbPool, err := pgxpool.New(ctx, riversharedtest.TestDatabaseURL())
+	require.NoError(t, err)
+	defer dbPool.Close()
+
+	schema := riverdbtest.TestSchema(ctx, t, riverpgxv5.New(dbPool), nil)
+
+	w := &recordingWorker{mu: &sync.Mutex{}, dur: 0}
+	workers := river.NewWorkers()
+	river.AddWorker(workers, w)
+
+	client, err := riverworkflow.NewClient(riverpgxv5.New(dbPool), &riverworkflow.Config{
+		Config: river.Config{
+			Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}},
+			Schema:  schema,
+			Workers: workers,
+		},
+		WorkflowScheduler: riverworkflow.WorkflowSchedulerConfig{
+			Interval:                    100 * time.Millisecond,
+			WorkflowTimerPollerInterval: 50 * time.Millisecond,
+		},
+	})
+	require.NoError(t, err)
+
+	subscribeChan, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	wf := client.NewWorkflow(&riverworkflow.WorkflowOpts{Name: "signal-resolved-test"})
+	a := wf.Add("a", recordingWorkerArgs{Task: "a"}, nil, nil)
+	wf.Add("b", recordingWorkerArgs{Task: "b"}, nil, &riverworkflow.WorkflowTaskOpts{
+		Deps: []string{a.Name},
+		Wait: &riverworkflow.WaitSpec{
+			Terms: []riverworkflow.WaitTermSpec{
+				riverworkflow.WaitTermSignal("approved", "approved", "payload.ok"),
+			},
+			Expr: "approved",
+		},
+	})
+
+	prep, err := wf.Prepare(ctx)
+	require.NoError(t, err)
+	_, err = client.InsertMany(ctx, prep.Jobs)
+	require.NoError(t, err)
+
+	require.NoError(t, client.Start(ctx))
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		require.NoError(t, client.Stop(stopCtx))
+	}()
+
+	// Wait for task "a" to complete first.
+	timeout := time.After(15 * time.Second)
+	select {
+	case <-subscribeChan:
+		// task "a" completed
+	case <-timeout:
+		t.Fatal("timed out waiting for task a to complete")
+	}
+
+	// Emit the signal that unblocks task "b".
+	_, err = wf.Signals().Emit(ctx, "approved", map[string]any{"ok": true}, nil)
+	require.NoError(t, err)
+
+	// Wait for task "b" to complete — the mark-resolved call fires synchronously
+	// in processWaitTask right after the promote, so by the time "b" completes
+	// the signal is already stamped with resolved_at.
+	timeout2 := time.After(15 * time.Second)
+	select {
+	case <-subscribeChan:
+		// task "b" completed
+	case <-timeout2:
+		t.Fatal("timed out waiting for task b to complete after signal was emitted")
+	}
+
+	// Assert signal is marked resolved: ListForTask with IncludeAfterResolution:false
+	// (the default) must return zero rows — the signal is now resolved/consumed.
+	unresolvedSigs, err := wf.Signals().ListForTask(ctx, "b", "approved",
+		&riverworkflow.WorkflowSignalListForTaskParams{IncludeAfterResolution: false})
+	require.NoError(t, err)
+	require.Empty(t, unresolvedSigs,
+		"signal 'approved' must be excluded from the default (unresolved-only) view after task b is promoted")
+
+	// With IncludeAfterResolution:true the signal must be visible and carry a
+	// non-nil ResolvedAt timestamp.
+	resolvedSigs, err := wf.Signals().ListForTask(ctx, "b", "approved",
+		&riverworkflow.WorkflowSignalListForTaskParams{IncludeAfterResolution: true})
+	require.NoError(t, err)
+	require.Len(t, resolvedSigs, 1,
+		"signal 'approved' must be included in the resolved-inclusive view")
+	require.NotNil(t, resolvedSigs[0].ResolvedAt,
+		"ResolvedAt must be non-nil after the scheduler marks the signal resolved on promotion")
+}
