@@ -71,6 +71,14 @@ to read sibling rows that you depend on, then `tasks.Output(name, &out)` to
 decode JSON output recorded by an upstream worker via
 `river.RecordOutput`.
 
+## Waits: signals, timers, and CEL conditions
+
+Beyond dependency DAGs, a task can carry a `Wait` that holds it until a
+**signal** arrives, a **timer** fires, or a **CEL** condition over
+signals/timers/dependency-outputs resolves true — with read-only
+`WaitDiagnostics` for introspection. See
+[`docs/workflow_wait.md`](../docs/workflow_wait.md) for the full guide.
+
 ## Driver support
 
 All three OSS drivers are supported: `riverpgxv5`, `riverdatabasesql`, and
