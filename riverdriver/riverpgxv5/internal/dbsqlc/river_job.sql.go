@@ -786,6 +786,64 @@ func (q *Queries) JobGetStuck(ctx context.Context, db DBTX, arg *JobGetStuckPara
 	return items, nil
 }
 
+const jobGetWorkflowDeadlineExpired = `-- name: JobGetWorkflowDeadlineExpired :many
+SELECT id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
+FROM /* TEMPLATE: schema */river_job
+WHERE state IN ('available','pending','retryable','running','scheduled')
+  AND metadata ? 'river:workflow_deadline_at'
+  AND (metadata->>'river:workflow_deadline_at')::timestamptz < $1::timestamptz
+ORDER BY id
+LIMIT $2::int
+`
+
+type JobGetWorkflowDeadlineExpiredParams struct {
+	Now time.Time
+	Max int32
+}
+
+// Returns non-terminal workflow tasks whose river:workflow_deadline_at metadata
+// is in the past (i.e., < @now). Used by the workflow scheduler's
+// cancelExpiredWorkflows pass as a dialect-correct alternative to the
+// Postgres-only `metadata ? 'key'` and `->>` operators.
+func (q *Queries) JobGetWorkflowDeadlineExpired(ctx context.Context, db DBTX, arg *JobGetWorkflowDeadlineExpiredParams) ([]*RiverJob, error) {
+	rows, err := db.Query(ctx, jobGetWorkflowDeadlineExpired, arg.Now, arg.Max)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*RiverJob
+	for rows.Next() {
+		var i RiverJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.Args,
+			&i.Attempt,
+			&i.AttemptedAt,
+			&i.AttemptedBy,
+			&i.CreatedAt,
+			&i.Errors,
+			&i.FinalizedAt,
+			&i.Kind,
+			&i.MaxAttempts,
+			&i.Metadata,
+			&i.Priority,
+			&i.Queue,
+			&i.State,
+			&i.ScheduledAt,
+			&i.Tags,
+			&i.UniqueKey,
+			&i.UniqueStates,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const jobGetWorkflowTasks = `-- name: JobGetWorkflowTasks :many
 SELECT id, args, attempt, attempted_at, attempted_by, created_at, errors, finalized_at, kind, max_attempts, metadata, priority, queue, state, scheduled_at, tags, unique_key, unique_states
 FROM /* TEMPLATE: schema */river_job

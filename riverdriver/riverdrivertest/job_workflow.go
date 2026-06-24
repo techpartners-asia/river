@@ -17,6 +17,7 @@ import (
 
 // workflowJobOpts carries options for inserting a workflow task via insertWorkflowJob.
 type workflowJobOpts struct {
+	DeadlineAt          time.Time // if non-zero, sets river:workflow_deadline_at (RFC3339Nano UTC)
 	Deps                []string
 	IgnoreCancelledDeps bool
 	IgnoreDeletedDeps   bool
@@ -46,6 +47,9 @@ func insertWorkflowJob(ctx context.Context, t *testing.T, exec riverdriver.Execu
 	}
 	if opts.IgnoreDeletedDeps {
 		metadata[rivercommon.MetadataKeyWorkflowIgnoreDeletedDeps] = true
+	}
+	if !opts.DeadlineAt.IsZero() {
+		metadata[rivercommon.MetadataKeyWorkflowDeadlineAt] = opts.DeadlineAt.UTC().Format(time.RFC3339Nano)
 	}
 	if opts.Wait != nil {
 		metadata[rivercommon.MetadataKeyWorkflowWait] = opts.Wait
@@ -393,6 +397,107 @@ func exerciseJobApplyWorkflowWait[TTx any](ctx context.Context, t *testing.T, ex
 			})
 			require.ErrorIs(t, err, rivertype.ErrNotFound, "non-pending row must return ErrNotFound")
 			require.Nil(t, row)
+		})
+	})
+}
+
+func exerciseJobGetWorkflowDeadlineExpired[TTx any](ctx context.Context, t *testing.T, executorWithTx func(ctx context.Context, t *testing.T) (riverdriver.Executor, riverdriver.Driver[TTx])) {
+	t.Helper()
+
+	setup := func(ctx context.Context, t *testing.T) riverdriver.Executor {
+		t.Helper()
+		exec, _ := executorWithTx(ctx, t)
+		return exec
+	}
+
+	t.Run("JobGetWorkflowDeadlineExpired", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("ReturnsExpiredNonTerminalTasks", func(t *testing.T) {
+			t.Parallel()
+
+			exec := setup(ctx, t)
+
+			now := time.Now().UTC()
+			workflowID := "wf-deadline-basic"
+
+			// (a) A non-terminal task with a deadline in the PAST — must be returned.
+			pastDeadlineTask := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "past-deadline",
+				State:      rivertype.JobStateAvailable,
+				DeadlineAt: now.Add(-time.Hour),
+			})
+
+			// (b) A non-terminal task with a deadline in the FUTURE — must NOT be returned.
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "future-deadline",
+				State:      rivertype.JobStateAvailable,
+				DeadlineAt: now.Add(time.Hour),
+			})
+
+			// (c) A non-workflow task (no deadline key) — must NOT be returned.
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "no-deadline",
+				State:      rivertype.JobStateAvailable,
+			})
+
+			// (d) A finalized/completed task with a past deadline — must NOT be returned
+			// because its state is not in the non-terminal set.
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "completed-past-deadline",
+				State:      rivertype.JobStateCompleted,
+				DeadlineAt: now.Add(-time.Hour),
+			})
+
+			rows, err := exec.JobGetWorkflowDeadlineExpired(ctx, &riverdriver.JobGetWorkflowDeadlineExpiredParams{
+				Now: now,
+				Max: 100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 1, "only the non-terminal task with a past deadline must be returned")
+			require.Equal(t, pastDeadlineTask.ID, rows[0].ID)
+		})
+
+		t.Run("BoundarySubSecondPrecision", func(t *testing.T) {
+			t.Parallel()
+
+			// This test is the critical cross-dialect regression guard. It verifies
+			// that a deadline stored as a whole-second RFC3339Nano string (no
+			// fractional part, e.g. "...T05:00:00Z") is correctly returned when
+			// `now` is that same second plus 1ms (e.g. "...T05:00:00.001Z").
+			// A naive lexical string comparison would fail here because 'Z' (ASCII
+			// 90) > '.' (ASCII 46), making the whole-second string sort AFTER the
+			// sub-second one, causing missed deadlines. Postgres uses ::timestamptz
+			// (correct). SQLite uses julianday() (correct). This test catches
+			// regressions to a string-based SQLite approach.
+			exec := setup(ctx, t)
+
+			workflowID := "wf-deadline-boundary"
+
+			// Deadline at a whole second — stored as RFC3339Nano with no fractional part.
+			wholeSecond := time.Date(2020, 1, 1, 0, 0, 5, 0, time.UTC)
+
+			// "now" is the same second + 1ms: chronologically after the deadline.
+			nowWithSubSec := wholeSecond.Add(time.Millisecond)
+
+			task := insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "whole-second-deadline",
+				State:      rivertype.JobStateAvailable,
+				DeadlineAt: wholeSecond,
+			})
+
+			rows, err := exec.JobGetWorkflowDeadlineExpired(ctx, &riverdriver.JobGetWorkflowDeadlineExpiredParams{
+				Now: nowWithSubSec,
+				Max: 100,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 1, "whole-second deadline < sub-second now must be returned (boundary precision test)")
+			require.Equal(t, task.ID, rows[0].ID)
 		})
 	})
 }

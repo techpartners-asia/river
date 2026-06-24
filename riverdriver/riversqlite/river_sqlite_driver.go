@@ -624,6 +624,21 @@ func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.
 	return filtered, nil
 }
 
+func (e *Executor) JobGetWorkflowDeadlineExpired(ctx context.Context, params *riverdriver.JobGetWorkflowDeadlineExpiredParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobGetWorkflowDeadlineExpired(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowDeadlineExpiredParams{
+		// Pass Now as an RFC3339Nano UTC string — the same format that workflow.go
+		// writes into the river:workflow_deadline_at metadata key. julianday() in
+		// the SQL query handles ISO8601 strings (including the T separator and Z
+		// suffix) for sub-second-precision comparison.
+		Now: params.Now.UTC().Format(time.RFC3339Nano),
+		Max: int64(params.Max),
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
 func (e *Executor) JobGetWorkflowWaitTasks(ctx context.Context, params *riverdriver.JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error) {
 	jobs, err := dbsqlc.New().JobGetWorkflowWaitTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowWaitTasksParams{
 		AfterID: params.AfterID,

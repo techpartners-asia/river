@@ -392,6 +392,17 @@ func (e *Executor) JobGetWorkflowTasks(ctx context.Context, params *riverdriver.
 	return sliceutil.MapError(jobs, jobRowFromInternal)
 }
 
+func (e *Executor) JobGetWorkflowDeadlineExpired(ctx context.Context, params *riverdriver.JobGetWorkflowDeadlineExpiredParams) ([]*rivertype.JobRow, error) {
+	jobs, err := dbsqlc.New().JobGetWorkflowDeadlineExpired(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowDeadlineExpiredParams{
+		Now: params.Now,
+		Max: int32(min(params.Max, math.MaxInt32)), //nolint:gosec
+	})
+	if err != nil {
+		return nil, interpretError(err)
+	}
+	return sliceutil.MapError(jobs, jobRowFromInternal)
+}
+
 func (e *Executor) JobGetWorkflowWaitTasks(ctx context.Context, params *riverdriver.JobGetWorkflowWaitTasksParams) ([]*rivertype.JobRow, error) {
 	jobs, err := dbsqlc.New().JobGetWorkflowWaitTasks(schemaTemplateParam(ctx, params.Schema), e.dbtx, &dbsqlc.JobGetWorkflowWaitTasksParams{
 		AfterID: params.AfterID,
