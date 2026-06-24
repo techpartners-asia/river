@@ -825,10 +825,10 @@ type JobGetWorkflowDeadlineExpiredParams struct {
 	Max int32
 }
 
-// Returns non-terminal workflow tasks whose river:workflow_deadline_at metadata
-// is in the past (i.e., < @now). Used by the workflow scheduler's
-// cancelExpiredWorkflows pass as a dialect-correct alternative to the
-// Postgres-only `metadata ? 'key'` and `->>` operators.
+// Lists non-terminal workflow tasks whose recorded deadline has passed. Each
+// driver uses its own JSON/timestamp dialect (Postgres: ::timestamptz cast;
+// SQLite: julianday()). Used by the workflow scheduler's cancelExpiredWorkflows
+// pass.
 func (q *Queries) JobGetWorkflowDeadlineExpired(ctx context.Context, db DBTX, arg *JobGetWorkflowDeadlineExpiredParams) ([]*RiverJob, error) {
 	rows, err := db.QueryContext(ctx, jobGetWorkflowDeadlineExpired, arg.Now, arg.Max)
 	if err != nil {

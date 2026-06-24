@@ -319,5 +319,80 @@ func exerciseWorkflowSignal[TTx any](ctx context.Context, t *testing.T, executor
 			require.NoError(t, err)
 			require.Len(t, limited, 2)
 		})
+
+		t.Run("ListNewest_IncludeAfterResolution", func(t *testing.T) {
+			t.Parallel()
+
+			// Verifies the resolved_at filter works on the DESC (OrderByNewest:true)
+			// path used by LatestForTask and the workflow scheduler. Mirrors
+			// List_IncludeAfterResolution but uses two distinct keys and asserts
+			// newest-first ordering so the test is meaningful for the DESC path.
+
+			exec, bundle := setup(ctx, t)
+
+			base := time.Now().UTC().Truncate(time.Second)
+
+			step := bundle.driver.TimePrecision()
+			if step < time.Second {
+				step = time.Second
+			}
+
+			// Insert two signals with distinct keys: resolved one is older (base),
+			// active one is newer (base+step) so newest-first ordering is testable.
+			sigResolved, err := exec.WorkflowSignalEmit(ctx, &riverdriver.WorkflowSignalEmitParams{
+				WorkflowID: "wf-newest-resolved-01",
+				SignalKey:  "sig.done",
+				Payload:    []byte(`{"n":1}`),
+				Now:        base,
+			})
+			require.NoError(t, err)
+
+			sigActive, err := exec.WorkflowSignalEmit(ctx, &riverdriver.WorkflowSignalEmitParams{
+				WorkflowID: "wf-newest-resolved-01",
+				SignalKey:  "sig.active",
+				Payload:    []byte(`{"n":2}`),
+				Now:        base.Add(step),
+			})
+			require.NoError(t, err)
+
+			// Mark only "sig.done" as resolved.
+			err = exec.WorkflowSignalMarkResolved(ctx, &riverdriver.WorkflowSignalMarkResolvedParams{
+				WorkflowID: "wf-newest-resolved-01",
+				SignalKeys: []string{"sig.done"},
+				Now:        base.Add(2 * step),
+			})
+			require.NoError(t, err)
+
+			// OrderByNewest:true, IncludeResolved:false — must exclude the resolved signal.
+			got, err := exec.WorkflowSignalList(ctx, &riverdriver.WorkflowSignalListParams{
+				WorkflowID:      "wf-newest-resolved-01",
+				IncludeResolved: false,
+				OrderByNewest:   true,
+				Max:             100,
+			})
+			require.NoError(t, err)
+			require.Len(t, got, 1, "DESC path with IncludeResolved:false must exclude the resolved signal")
+			require.Equal(t, sigActive.ID, got[0].ID, "only the unresolved signal must be returned")
+
+			// OrderByNewest:true, IncludeResolved:true — must include both, newest first.
+			gotAll, err := exec.WorkflowSignalList(ctx, &riverdriver.WorkflowSignalListParams{
+				WorkflowID:      "wf-newest-resolved-01",
+				IncludeResolved: true,
+				OrderByNewest:   true,
+				Max:             100,
+			})
+			require.NoError(t, err)
+			require.Len(t, gotAll, 2, "DESC path with IncludeResolved:true must return both signals")
+			// Newest (sigActive, base+step) must come first in DESC order.
+			require.Equal(t, sigActive.ID, gotAll[0].ID, "newest signal must be first in DESC result")
+			require.Equal(t, sigResolved.ID, gotAll[1].ID, "older resolved signal must be second in DESC result")
+
+			// The resolved signal must have a non-nil resolved_at.
+			for _, s := range gotAll {
+				if s.ID == sigResolved.ID {
+					require.NotNil(t, s.ResolvedAt, "resolved signal must have non-nil resolved_at")
+				}
+			}
+		})
 	})
 }
