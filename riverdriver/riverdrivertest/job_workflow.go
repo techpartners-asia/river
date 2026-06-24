@@ -453,6 +453,22 @@ func exerciseJobGetWorkflowDeadlineExpired[TTx any](ctx context.Context, t *test
 				DeadlineAt: now.Add(-time.Hour),
 			})
 
+			// (e) A cancelled task with a past deadline — must NOT be returned.
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "cancelled-past-deadline",
+				State:      rivertype.JobStateCancelled,
+				DeadlineAt: now.Add(-time.Hour),
+			})
+
+			// (f) A discarded task with a past deadline — must NOT be returned.
+			_ = insertWorkflowJob(ctx, t, exec, workflowJobOpts{
+				WorkflowID: workflowID,
+				TaskName:   "discarded-past-deadline",
+				State:      rivertype.JobStateDiscarded,
+				DeadlineAt: now.Add(-time.Hour),
+			})
+
 			rows, err := exec.JobGetWorkflowDeadlineExpired(ctx, &riverdriver.JobGetWorkflowDeadlineExpiredParams{
 				Now: now,
 				Max: 100,

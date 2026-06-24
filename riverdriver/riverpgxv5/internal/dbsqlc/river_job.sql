@@ -738,10 +738,10 @@ WHERE metadata->>'river:workflow_id' = @workflow_id::text
   )
 ORDER BY id;
 
--- Returns non-terminal workflow tasks whose river:workflow_deadline_at metadata
--- is in the past (i.e., < @now). Used by the workflow scheduler's
--- cancelExpiredWorkflows pass as a dialect-correct alternative to the
--- Postgres-only `metadata ? 'key'` and `->>` operators.
+-- Lists non-terminal workflow tasks whose recorded deadline has passed. Each
+-- driver uses its own JSON/timestamp dialect (Postgres: ::timestamptz cast;
+-- SQLite: julianday()). Used by the workflow scheduler's cancelExpiredWorkflows
+-- pass.
 -- name: JobGetWorkflowDeadlineExpired :many
 SELECT *
 FROM /* TEMPLATE: schema */river_job
