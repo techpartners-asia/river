@@ -107,6 +107,20 @@ func TestWaitSpecValidateRejectsUnknownTermInExpr(t *testing.T) {
 	}
 }
 
+func TestWaitSpecValidateRejectsNonBoolExpr(t *testing.T) {
+	// A non-bool top-level expr would otherwise pass validation and then hang
+	// the task forever at scheduler time (evalBool never sees a bool).
+	for _, expr := range []string{"1 + 1", `"x"`, "deadline ? 1 : 0"} {
+		s := &WaitSpec{
+			Terms: []WaitTermSpec{WaitTermTimer(TimerAfterWaitStarted("deadline", time.Hour))},
+			Expr:  expr,
+		}
+		if err := s.Validate(); err == nil {
+			t.Fatalf("expected non-bool top-level expr %q to be rejected", expr)
+		}
+	}
+}
+
 func TestParseWaitSpecRoundTrip(t *testing.T) {
 	orig := &WaitSpec{
 		Terms: []WaitTermSpec{WaitTermSignal("ok", "approved", "payload.ok")},

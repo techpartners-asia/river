@@ -150,7 +150,13 @@ func evalBool(prg cel.Program, activation map[string]any) (bool, error) {
 	}
 	b, ok := out.Value().(bool)
 	if !ok {
-		return false, fmt.Errorf("waiteval: expression did not return bool, got %T", out.Value())
+		// A non-bool result (only reachable from a dyn-typed sub-expression,
+		// e.g. a signal term `payload.count`) is treated as not-yet-satisfied,
+		// consistent with the eval-error branch above. Returning an error here
+		// would propagate up and be logged non-fatally every tick while the
+		// task stays held anyway — same outcome, just noisier. Concretely
+		// non-bool top-level expressions are rejected at compile time.
+		return false, nil
 	}
 	return b, nil
 }
@@ -226,9 +232,15 @@ func Compile(terms []TermData, expr string) (*Program, error) {
 		return nil, fmt.Errorf("waiteval: build top-level env: %w", err)
 	}
 
-	topProg, _, err := compileExpr(topEnv, expr)
+	topProg, topAST, err := compileExpr(topEnv, expr)
 	if err != nil {
 		return nil, fmt.Errorf("waiteval: compile top-level expr: %w", err)
+	}
+	if !isBoolOrDynOutputType(topAST) {
+		// Reject a concretely non-bool top-level expr (e.g. "1 + 1") at compile
+		// time so WaitSpec.Validate fails fast, rather than the task silently
+		// never promoting at scheduler time.
+		return nil, fmt.Errorf("waiteval: top-level expr must return bool (got %s)", topAST.OutputType())
 	}
 
 	return &Program{
