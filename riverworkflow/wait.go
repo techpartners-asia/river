@@ -103,8 +103,28 @@ func (s *WaitSpec) Validate() error {
 			if t.Timer == nil {
 				return fmt.Errorf("%w: term %q has nil timer", ErrWaitTimerAnchorInvalid, t.Name)
 			}
-			if t.Timer.Kind == TimerKindAfterTaskFinalized && t.Timer.DepTaskName == "" {
-				return fmt.Errorf("%w: term %q requires a dep task name", ErrWaitTimerAnchorInvalid, t.Name)
+			// Reject specs that would pass through to the scheduler and then
+			// fail at ResolveTimer every tick — an unknown kind there is logged
+			// non-fatally, so the task would hang forever instead of failing
+			// fast here.
+			switch t.Timer.Kind {
+			case TimerKindAt:
+				if t.Timer.At.IsZero() {
+					return fmt.Errorf("%w: term %q kind %q requires a non-zero At time", ErrWaitTimerAnchorInvalid, t.Name, t.Timer.Kind)
+				}
+			case TimerKindAfterWaitStarted, TimerKindAfterWorkflowCreated:
+				if t.Timer.Dur < 0 {
+					return fmt.Errorf("%w: term %q kind %q requires a non-negative Dur", ErrWaitTimerAnchorInvalid, t.Name, t.Timer.Kind)
+				}
+			case TimerKindAfterTaskFinalized:
+				if t.Timer.DepTaskName == "" {
+					return fmt.Errorf("%w: term %q requires a dep task name", ErrWaitTimerAnchorInvalid, t.Name)
+				}
+				if t.Timer.Dur < 0 {
+					return fmt.Errorf("%w: term %q kind %q requires a non-negative Dur", ErrWaitTimerAnchorInvalid, t.Name, t.Timer.Kind)
+				}
+			default:
+				return fmt.Errorf("%w: term %q has unknown timer kind %q", ErrWaitTimerAnchorInvalid, t.Name, t.Timer.Kind)
 			}
 		}
 	}

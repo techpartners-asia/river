@@ -274,6 +274,15 @@ func (s *WorkflowScheduler) processWaitTask(
 	// defined as the row with the greatest (created_at, id); the max-by reduce
 	// is robust regardless of ordering direction.
 	//
+	// LIMITATION: the scan is a single global query across all keys, not
+	// per-key. DESC protects the newest signals globally, but if a single
+	// workflow emits more than SignalScanLimit (default 10k) signals total, a
+	// low-frequency key whose latest signal is older than the limit's cutoff
+	// can be dropped from this window — its term would then read "absent". The
+	// Truncated flag surfaces when the scan hit the limit. A per-key
+	// latest-signal query would remove this edge; deferred as a follow-up since
+	// it touches all three drivers. See docs/workflow_wait.md (Known limits).
+	//
 	// PARITY: Attempt = number of signals emitted for the key (count), inferred.
 	var signalViews map[string]waiteval.SignalView
 	if hasSignalTerm {

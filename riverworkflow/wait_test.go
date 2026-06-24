@@ -45,6 +45,40 @@ func TestWaitSpecValidate(t *testing.T) {
 		}
 		require.ErrorIs(t, s.Validate(), ErrWaitTimerAnchorInvalid)
 	})
+
+	t.Run("TimerUnknownKind", func(t *testing.T) {
+		// A bad kind would otherwise pass validation and then fail at
+		// ResolveTimer every tick, hanging the task forever.
+		s := &WaitSpec{
+			Terms: []WaitTermSpec{WaitTermTimer(TimerSpec{Name: "d", Kind: "after_made_up"})},
+			Expr:  "d",
+		}
+		require.ErrorIs(t, s.Validate(), ErrWaitTimerAnchorInvalid)
+	})
+
+	t.Run("TimerEmptyKind", func(t *testing.T) {
+		s := &WaitSpec{
+			Terms: []WaitTermSpec{WaitTermTimer(TimerSpec{Name: "d"})},
+			Expr:  "d",
+		}
+		require.ErrorIs(t, s.Validate(), ErrWaitTimerAnchorInvalid)
+	})
+
+	t.Run("TimerAtNeedsNonZeroTime", func(t *testing.T) {
+		s := &WaitSpec{
+			Terms: []WaitTermSpec{WaitTermTimer(TimerAt("d", time.Time{}))},
+			Expr:  "d",
+		}
+		require.ErrorIs(t, s.Validate(), ErrWaitTimerAnchorInvalid)
+	})
+
+	t.Run("TimerNegativeDuration", func(t *testing.T) {
+		s := &WaitSpec{
+			Terms: []WaitTermSpec{WaitTermTimer(TimerAfterWaitStarted("d", -time.Minute))},
+			Expr:  "d",
+		}
+		require.ErrorIs(t, s.Validate(), ErrWaitTimerAnchorInvalid)
+	})
 }
 
 func TestWaitTermBuilders(t *testing.T) {

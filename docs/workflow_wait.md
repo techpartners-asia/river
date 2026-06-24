@@ -149,6 +149,14 @@ conformance-tested across `riverpgxv5`, `riverdatabasesql`, and `riversqlite`.
 - River Pro is closed-source; the public API is mirrored from its docs, but
   some internal behaviors (e.g. the exact set of signals marked resolved on
   promotion) are inferred and marked `// PARITY:` in the code.
+- **Signal scan is global, not per-key.** Each evaluation loads the newest
+  `SignalScanLimit` signals (default 10,000) for the whole workflow, then keeps
+  the latest per key. If one workflow emits more than that many signals total,
+  a low-frequency key whose latest signal falls outside the newest-10k window
+  can be missed, leaving its term unresolved. `diag.Truncated` (and the
+  per-task `Truncated` flag) reports when a scan hit the limit. Practically
+  only reachable by very high-volume signal workflows; a per-key latest-signal
+  query would remove it (deferred — touches all three drivers).
 - River UI visualization lives in the separate
   [riverui](https://github.com/techpartners-asia/riverui) project; see its
   `docs/workflow_wait_ui.md`.
